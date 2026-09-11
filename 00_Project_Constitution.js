@@ -3,8 +3,9 @@
  * PROCUREMENT OS V0.1 — 00_Project_Constitution.gs
  * ============================================================
  * Module Range : 60–69 (Domain) + 00_Capability_* (Core, shared with Inventory OS)
- * Version      : V0.1 (Architecture Initialization — NO implementation code exists yet)
- * Last Updated : 2026-09-07
+ * Version      : V0.2 (Architecture Freeze Ready — Q1–Q5 closed;
+ *                NO implementation code exists yet)
+ * Last Updated : 2026-09-09
  *
  * 任何架构 / 命名 / 职责变更，必须先更新此文件，再动代码。
  * ============================================================
@@ -88,6 +89,29 @@
  *     决策链路需要的参考数值，不构成财务真相。真正的付款、账户
  *     变动、对账、会计分类，属于 Finance OS（存在时）的权责——
  *     见 ADR-000 Alternatives 与本文件"六、与 Finance OS 的边界"。
+ *
+ * P9. 【Q4 / ADR-001 补充】User Confirmation 是"对某一份具体呈现
+ *     给用户的提案"的确认，不是对"这个 identity_id 未来任何采购"
+ *     的授权。确认的范围严格限定在呈现时的
+ *     {identity_id, decided_quantity, urgency} 快照。若在
+ *     CONFIRMED 与 EXECUTED 之间，这几个字段中任何一个发生实质
+ *     变化（identity_id 变了；decided_quantity 变化超出容忍度；
+ *     urgency 从呈现时的等级发生升降），Execution 必须视为该
+ *     confirmation 已失效，把状态打回 AWAITING_CONFIRMATION 并
+ *     重新触发确认，不能拿旧的确认记录去授权一个用户没见过的新
+ *     提案。渠道（Telegram 或未来任何渠道）本身永远不是这个
+ *     确认的拥有者——Telegram 只是把"用户说了 CONFIRM"这个事实
+ *     传回来的一个 Adapter，确认到底对不对应该被信任，最终仍由
+ *     Procurement Core（Execution 的重新校验）判断，不是
+ *     Telegram Adapter 自己说了算。
+ *
+ * P10. 【Q5 / ADR-003】Bridge 的入站路径必须具备幂等性，且这个
+ *     要求在实现阶段开始之前就必须成立，不能"先实现、审计后再
+ *     补"。对重试、重复投递、超时重试、replay、灾难恢复、重复
+ *     回调、人工重新处理，系统都不能因此产生第二次有效的业务
+ *     写入。幂等性检查与真正的写入必须在同一个临界区内完成
+ *     （Execution 持锁），不允许"先查存在与否、再决定要不要写"
+ *     这种检查和写入分离、留有竞态窗口的写法。
  */
 
 /* ============================================================
@@ -121,14 +145,19 @@
  *                        流程、建议数量/时机）；recompute()=
  *                        Execution 持锁后的权威结果。零副作用
  * S4.5 UserConfirmation  64_ProcurementUserConfirmation.gs
- *                        显式治理边界（见 P4 / ADR-001）：把
- *                        Decision 的建议呈现给用户（经 Bridge 发
- *                        Telegram），并且是唯一能把请求状态从
- *                        AWAITING_CONFIRMATION 推进到 CONFIRMED
- *                        或 REJECTED 的模块。不执行任何写入
- *                        PROCUREMENT_REQUESTS 主记录的操作——
- *                        只记录"用户说了什么"，真正的状态落地
- *                        仍由 Execution 在持锁后完成
+ *                        显式治理边界（见 P4/P9/ADR-001），渠道
+ *                        无关（Q4）：自己不知道"Telegram"的细节，
+ *                        只定义 CONFIRM/REJECT/EXPIRE 三种结果的
+ *                        规则与状态语义，实际收发消息交给一个
+ *                        更下层的 Telegram Adapter（经 Bridge）。
+ *                        是唯一能把请求状态从
+ *                        AWAITING_CONFIRMATION 推进到 CONFIRMED /
+ *                        REJECTED / EXPIRED 的模块。不执行任何
+ *                        写入 PROCUREMENT_REQUESTS 主记录的
+ *                        操作——只记录"用户说了什么、什么时候
+ *                        说的、针对哪一份快照说的"，真正的状态
+ *                        落地与"这份确认是否仍然有效"的判断
+ *                        （P9）仍由 Execution 在持锁后完成
  * S5  Execution          65_ProcurementExecution.gs
  *                        唯一写 PROCUREMENT_REQUESTS 表的层；唯一
  *                        LockService 脚本锁持有者。写入前必须
@@ -200,14 +229,26 @@
  *   证据驱动晋升原则，即使本仓库未正式采纳 Blueprint 本身，
  *   这条"证据优先于预判"的精神仍然适用）。
  *
- * 尚未确认可行的前提（需 Steven 确认，见「九、待确认事项」）：
- *   IDENTITY_REGISTRY 与 TASKS 两张表若物理上位于 Inventory OS
- *   自己的 Spreadsheet（00_Config.gs 的 SPREADSHEET_ID 目前为空，
- *   即"bound to active spreadsheet"），Procurement OS 若是一个
- *   独立部署的 GAS 项目，需要明确这两张表的跨项目访问方式
- *   （SPREADSHEET_ID 显式指向，或 Procurement OS 与 Inventory OS
- *   实际上共享同一个 Spreadsheet/Apps Script 项目）。本文件在此
- *   前提被明确解决前，不假设任何一种部署形态为默认。
+ * 部署形态（Q2 已决定，见 ADR-002）：
+ *   Runtime 边界与 Persistence 边界是两个独立决定，不可混为一谈：
+ *   - Runtime：Procurement OS 是独立的 GAS 项目/脚本容器，不依赖
+ *     Inventory OS 的 Runtime 运行——与 Inventory OS 之间只有
+ *     request/event 层面的往来（经 Bridge），没有代码层面的
+ *     调用依赖。
+ *   - Persistence：暂时共享同一个"生态系统 Spreadsheet"（与
+ *     IDENTITY_REGISTRY / TASKS 物理同表），但严格维持表级归属——
+ *     Procurement OS 自己的脚本只直接读写 PROCUREMENT_REQUESTS /
+ *     PROC_LEDGER 两张表，对 IDENTITY_REGISTRY / TASKS 一律只能
+ *     经 00_Capability_Identity.gs / Bridge 的既有接口访问，不
+ *     绕过接口直接操作这两张表的原始行。这是"暂时"的选择
+ *     （EP3 反过早工程化——现在没有证据支持需要物理隔离），不是
+ *     永久架构承诺，见 ADR-002 Review Trigger。
+ *   - 技术含义：Procurement OS 作为独立脚本容器，本来就不会
+ *     "bound" 到这个共享 Spreadsheet，需要显式
+ *     SpreadsheetApp.openById(ecosystemSpreadsheetId)——这一点
+ *     不因选 A（独立 Spreadsheet）或 B（共享）而改变，唯一的
+ *     差别是 Procurement 自己的两张新表，是并入这同一个
+ *     Spreadsheet，还是另开一个。
  */
 
 /* ============================================================
@@ -241,18 +282,29 @@
  *      临界区内被调用。原因与 Inventory OS 完全相同：GAS 脚本锁
  *      不可重入，嵌套获取/释放会在外层临界区仍需要该锁时提前
  *      释放，制造竞态窗口。
- * C13. ID 生成一律通过共享的 _reserveIdBlock() 做区块预留
- *      （复用 Inventory OS 00_Config.gs 的实现，若两者共享同一
- *      Spreadsheet；若确认为独立部署，Procurement OS 需要自己
- *      的 00_Config.gs 副本并使用独立的 PropertiesService key
- *      前缀，避免 ID 空间冲突——见「九、待确认事项」）。不允许
- *      每生成一个 ID 就单独调用一次 PropertiesService 的
- *      GET+SET。
+ * C13. ID 生成一律通过 _reserveIdBlock() 做区块预留（Q2 已决定
+ *      Persistence 暂时共享同一 Spreadsheet，Procurement OS 用
+ *      自己独立的 PropertiesService key 前缀——例如
+ *      'PROC_REQ_ID' 而非 Inventory 的 'INV_ID'——避免 ID
+ *      空间冲突；实现方式可以是调用共享 Config 里的通用
+ *      _reserveIdBlock() 辅助函数，也可以是 Procurement 自己
+ *      00_Config.gs 里的一份轻量副本，具体选哪个留到实现阶段
+ *      按实际代码组织决定，不是架构层面的分歧）。不允许每生成
+ *      一个 ID 就单独调用一次 PropertiesService 的 GET+SET。
  * C14. 【Procurement 专属】User Confirmation 的状态迁移
  *      （AWAITING_CONFIRMATION → CONFIRMED / REJECTED）只能由
  *      64_ProcurementUserConfirmation.gs 响应真实用户输入触发。
  *      禁止任何测试代码、种子数据脚本、或"方便调试"的临时函数
  *      绕过这一层直接把状态写成 CONFIRMED。
+ * C15. 【Q5 / ADR-003】65_ProcurementExecution 必须提供一个
+ *      "intake"入口（例如 executeIntake(candidateRequest,
+ *      idempotencyKey)），在持锁临界区内先检查
+ *      idempotencyKey 是否已存在于 PROCUREMENT_REQUESTS/
+ *      PROC_LEDGER 权威记录中；已存在则直接返回既有结果，不产生
+ *      新的 PROCUREMENT_REQUESTED 事件；不存在才继续正常写入
+ *      流程。CacheService 等短期缓存只能作为查询前的快速路径
+ *      optimisation，不能替代这个持久化层面的权威检查——短期
+ *      缓存会过期，但幂等性保证不能过期。
  */
 
 /* ============================================================
@@ -272,6 +324,13 @@
  *                                   // 经 _reserveIdBlock() 生成，
  *                                   // 不信任来源域提供的任何 ID
  *                                   // 作为 Procurement 自己的主键
+ *     idempotency_key   : string   // 【Q5/ADR-003 新增】
+ *                                   // = source_domain + ':' +
+ *                                   // source_reference + ':' +
+ *                                   // urgency（见 5.5）。由
+ *                                   // Normalizer 计算，Execution
+ *                                   // 在持锁临界区内用它做幂等
+ *                                   // 检查
  *     source_domain     : string   // 'Inventory' | 'Manual' |
  *                                   // 未来其他 Domain OS 名称——
  *                                   // 禁止硬编码为固定枚举（P7）
@@ -282,29 +341,62 @@
  *     identity_id       : string   // 经 CapabilityIdentity 校验/
  *                                   // 解析后的 canonical identity
  *     canonical_name    : string   // 展示用，来自 CapabilityIdentity
- *     estimated_quantity: number   // 明确是"估计值"（DM-04）——
- *                                   // 在通过 Decision + User
- *                                   // Confirmation 之前，绝不
- *                                   // 视为已承诺的采购数量
- *     unit              : string   // 与 estimated_quantity 配套；
- *                                   // 来源域必须提供，Procurement
- *                                   // 不猜测单位
+ *     estimated_quantity: number?  // 【Q3 已决定：可为 null】
+ *                                   // 明确是"估计值"（DM-04），且
+ *                                   // 只在来源域真的提供了这个
+ *                                   // 数字时才有值——今天唯一的
+ *                                   // 来源域 Inventory 的真实
+ *                                   // payload 里没有这个字段，
+ *                                   // Normalizer 绝不能替它编造
+ *                                   // 一个默认数量（P9/Q3 的
+ *                                   // "不得杜撰上游没给的事实"
+ *                                   // 原则）。为 null 时，
+ *                                   // Decision/UserConfirmation
+ *                                   // 必须能在没有建议数量的
+ *                                   // 情况下工作——数量留给用户
+ *                                   // 在确认时自己填，或留给
+ *                                   // 实际执行时人工判断
+ *     unit              : string?  // 同上，可为 null；来源域
+ *                                   // 未提供时 Procurement 不
+ *                                   // 猜测单位
  *     urgency           : enum     // NORMAL | HIGH | CRITICAL
  *                                   // （Procurement 自己的枚举，
  *                                   // 故意不直接复用 Inventory
  *                                   // 的 RISK 枚举——两者语义不同，
  *                                   // 对齐 Inventory OS G4 的
  *                                   // 「同名词汇分域管理」精神）
- *     reason            : string   // 自由文本，人类可读，禁止
- *                                   // 硬编码为 "Inventory"（DM-07）
- *     required_before   : string?  // ISO 日期字符串，语义 = 
+ *     reason            : string?  // 【Q3 已决定：可为 null】
+ *                                   // 自由文本，人类可读，禁止
+ *                                   // 硬编码为 "Inventory"（DM-07）；
+ *                                   // 今天来自 Inventory 的请求
+ *                                   // 没有这个字段，为 null，不
+ *                                   // 由 Procurement 编造一句
+ *                                   // "库存不足"之类的默认理由——
+ *                                   // 缺失就是缺失，UserConfirmation
+ *                                   // 呈现时用 urgency+canonical_name
+ *                                   // 拼一句人类可读的提示即可，
+ *                                   // 不需要假装有 reason
+ *     required_before   : string?  // ISO 日期字符串，语义 =
  *                                   // "期望在此日期前完成"的
  *                                   // 操作性目标（operational
  *                                   // target），不是保证的硬
- *                                   // deadline（DM-06，见 DD 记录）
+ *                                   // deadline（DM-06，见 DD 记录）；
+ *                                   // 【Q3】今天来自 Inventory 的
+ *                                   // 请求同样没有这个字段，可为
+ *                                   // null
  *     requested_at      : string   // 由 60_ProcurementRequest
  *                                   // 用共享 _now() 等价函数生成
  *   }
+ *
+ * 【Q3 补充说明】estimated_quantity / unit / reason /
+ * required_before 四个字段全部标记为可空，是如实反映"Inventory
+ * 今天真的只发了 { itemId, identityId, itemName, urgency }
+ * 四个字段"这个事实，而不是本文件当初设计契约时假设的更丰富
+ * 输入。把这四个字段补齐，需要修改 Inventory OS 自己的
+ * 29_InventoryBridge.gs，明确记录为 Inventory OS 未来的迭代
+ * 事项（见五、5.2），本次任务不会为了让契约"看起来完整"而去
+ * 触碰 Inventory OS 的代码，也不会在 Procurement 这一侧偷偷
+ * 编造这些缺失字段的默认值。
  *
  * 5.2 Domain Adapter 原则（对齐 UEF UCR7 Adapter/Port 隔离）
  * ------------------------------------------------------------
@@ -313,26 +405,99 @@
  *
  * 目前唯一真实存在的 Adapter 是 Inventory Adapter：
  *   Inventory 侧：29_InventoryBridge.gs 的 sendProcurementRequest()
- *     【当前为 stub，真实 payload 仅有
- *      { itemId, identityId, itemName, urgency }——比本契约窄，
- *      见「九、待确认事项」】
+ *     【当前为 stub，真实 payload 就是且仅是
+ *      { itemId, identityId, itemName, urgency }——这是已核实的
+ *      当前事实，不是本文件的假设，见 Q3 决定：本次任务不修改
+ *      Inventory OS 代码来丰富它】
  *   Procurement 侧：69_ProcurementBridge.gs 的
- *     receiveFromInventory(payload) 负责把上述窄 payload 映射/
- *     补全为 5.1 的完整 Normalized Contract（缺失字段如
- *     estimated_quantity / reason / required_before 的默认值
- *     策略，是一个需要与 Inventory OS 一侧协调的后续事项，不在
- *     本次 Procurement OS 初始化范围内单方面决定）。
+ *     receiveFromInventory(payload) 只做"映射"，不做"补全"：
+ *     itemId → source_reference，identityId → identity_id（经
+ *     CapabilityIdentity.get() 校验存在性，不重新按名字解析），
+ *     itemName → canonical_name 的展示兜底，urgency → urgency
+ *     直通。estimated_quantity / unit / reason / required_before
+ *     一律映射为 null，不编造（P9/Q3）。补齐这四个字段需要
+ *     Inventory OS 自己在未来某次迭代里修改
+ *     29_InventoryBridge.gs——那是 Inventory OS 的变更，记录在
+ *     此作为已知的未来协调事项，不是 Procurement OS 这次要解决
+ *     的问题，也不是一个还悬而未决的问题。
  *
  * 5.3 Event Envelope（S6 / 66_ProcurementEvents.gs）
  * ------------------------------------------------------------
- * 固定 8 种事件类型，对齐 Inventory OS C6"固定枚举"原则：
+ * 固定 9 种事件类型（2026-09-09 新增 EXPIRED，与状态机同步），
+ * 对齐 Inventory OS C6"固定枚举"原则：
  *   PROCUREMENT_REQUESTED / PROCUREMENT_PLANNED /
  *   PROCUREMENT_PROPOSED / PROCUREMENT_CONFIRMED /
- *   PROCUREMENT_REJECTED / PROCUREMENT_EXECUTED /
- *   PROCUREMENT_CLOSED / PROCUREMENT_CANCELLED
+ *   PROCUREMENT_REJECTED / PROCUREMENT_EXPIRED /
+ *   PROCUREMENT_EXECUTED / PROCUREMENT_CLOSED /
+ *   PROCUREMENT_CANCELLED
  * 每种事件都是"事实"（fact），不是"指令"（command）或"决策"
  * （decision）——指令/决策活在 Decision 与 UserConfirmation 的
  * 预览对象里，从不直接写入 Ledger。
+ *
+ * 5.4 User Confirmation Contract（Q4/ADR-001，渠道无关设计）
+ * ------------------------------------------------------------
+ * 概念上明确区分六件事，任何实现代码不可把它们合并：
+ *   Recommendation（Decision.decide() 的预览输出）
+ *   → Decision（系统对"该不该问用户"的判断，本身不是授权）
+ *   → Confirmation（真实用户对某一份具体提案的明确响应）
+ *   → Authorization（Confirmation=CONFIRM 后，系统内部才能
+ *      认定"可以执行"这个状态）
+ *   → Execution（真正对外产生影响的动作——今天=创建 Task）
+ *   → Fact（写入 PROC_LEDGER 的不可变记录）
+ *
+ * 架构形状：
+ *   Procurement Core → AWAITING_CONFIRMATION
+ *     → User Confirmation Adapter（64_ProcurementUserConfirmation.gs，
+ *        渠道无关的状态与规则拥有者）
+ *         → Telegram Adapter（今天唯一实现的渠道；只负责收发
+ *           消息、把用户的回复转成 CONFIRM/REJECT/EXPIRE 三种
+ *           结果之一回传给 User Confirmation Adapter；不直接
+ *           改 Procurement 的任何状态字段）
+ *     → 回到 Procurement Core（Execution 重新校验后落地）
+ *
+ * 未来渠道（Web UI / Mobile UI / 其他 Chat 界面）只需要新增一个
+ * 平行于 Telegram Adapter 的适配器，State Machine 与
+ * User Confirmation Adapter 的规则不因此变化——这是"Core 必须
+ * 渠道无关"这条要求的具体落地方式。
+ *
+ * 语义边界（Q4 明确列出，必须在实现里体现）：
+ *   一次 CONFIRM 只代表用户确认了"呈现给他的那一份具体提案"
+ *   （identity_id + decided_quantity + urgency 的快照），不代表：
+ *     - Telegram 本身有权限批准未来任意采购
+ *     - AI 可以在没有新一轮确认的情况下自己产生一笔新订单
+ *     - 系统可以在确认之后静默修改数量/供应商/金额
+ *     - 这次确认可以被复用在另一笔无关的请求上
+ *   若 CONFIRMED 与 EXECUTED 之间提案的实质参数发生变化，见 P9：
+ *   Execution 必须判定该确认是否仍然有效，无效则打回
+ *   AWAITING_CONFIRMATION 重新确认，不得沿用旧确认放行新提案。
+ *
+ * 5.5 Bridge Idempotency Contract（Q5/ADR-003）
+ * ------------------------------------------------------------
+ * idempotency_key = source_domain + ':' + source_reference + ':'
+ *                   + urgency
+ *   例：'Inventory:item_042:CRITICAL'
+ *
+ * 已知局限（如实记录，不假装已解决）：Inventory 今天的 payload
+ * 不含任何时间戳或事件级 correlation ID（见 5.1 补充说明），
+ * 所以这个 key 的唯一性范围是"同一 identity 在同一 urgency 下，
+ * 只要还有一笔未进入终态（CLOSED/CANCELLED/REJECTED/EXPIRED）
+ * 的请求，就不再产生新请求"，而不是真正意义上的"这次 HTTP 调用
+ * 是否发生过两次"的传递级去重。这个局限来自上游数据本身的限制
+ * （Q3），不是 Procurement 自己能修的——等 Inventory OS 未来
+ * 提供真正的 event/correlation ID，这里的去重精度可以直接升级，
+ * 不需要重新设计。
+ *
+ * 处理流程（必须在 65_ProcurementExecution 的持锁临界区内完成，
+ * 见 C15/P10）：
+ *   收到候选请求 → 加锁 → 查询 PROCUREMENT_REQUESTS 是否已有
+ *   相同 idempotency_key 且状态非终态的记录 →
+ *     存在 → 直接返回既有 request_id 对应的现状，不新建
+ *            PROCUREMENT_REQUESTED 事件
+ *     不存在 → 正常走 intake 流程，写入新记录（含这个
+ *              idempotency_key），释放锁
+ *   CacheService 可以加在这个流程前面做快速路径（避免每次都要
+ *   查表），但缓存不是这个保证的来源——真正的判断永远以持久化
+ *   表里的查询结果为准，缓存过期不代表可以重新处理成功一次。
  */
 
 /* ============================================================
@@ -341,11 +506,14 @@
  * ============================================================
  *
  * PROCUREMENT_REQUESTS（Projection / Read Model，S7 维护）
- *   request_id / identity_id / canonical_name / source_domain /
- *   source_reference / estimated_quantity / unit / urgency /
- *   reason / required_before / requested_at / status /
+ *   request_id / idempotency_key / identity_id / canonical_name /
+ *   source_domain / source_reference / estimated_quantity / unit /
+ *   urgency / reason / required_before / requested_at / status /
  *   decided_quantity / confirmed_at / confirmed_by /
- *   executed_at / linked_task_id / closed_at / updated_at
+ *   confirmed_snapshot_json（P9 用——记录呈现给用户那一刻的
+ *   identity_id/decided_quantity/urgency 快照，供 Execution 比对
+ *   是否"实质变化"）/ executed_at / linked_task_id / closed_at /
+ *   updated_at
  *
  * PROC_LEDGER（S6，append-only）
  *   event_id / event_type / request_id / identity_id / actor /
@@ -355,9 +523,10 @@
  * TASKS — 不新建，复用现有共享表，source_system 写
  *         'ProcurementOS'
  *
- * STATUS（Projection 当前状态枚举，8 态，对齐 ADR-001 状态机）：
+ * STATUS（Projection 当前状态枚举，9 态，对齐 ADR-001 状态机，
+ * 2026-09-09 新增 EXPIRED）：
  *   REQUESTED | PLANNED | AWAITING_CONFIRMATION | CONFIRMED |
- *   REJECTED | EXECUTED | CLOSED | CANCELLED
+ *   REJECTED | EXPIRED | EXECUTED | CLOSED | CANCELLED
  *
  * URGENCY： NORMAL | HIGH | CRITICAL
  *
@@ -419,16 +588,27 @@
  *     採纳 UEF v1.12 §0.6（且明确声明"不代表採纳
  *     Universal_Domain_OS_Blueprint_v1.2.md"）。
  *
- * G2. 本文件选择让 Procurement OS 成为谱系 B（S1-S9 +
- *     Capability Layer）的第二个完整实现，而不是谱系 A
- *     （Blueprint 树）的新实现——理由见 ADR-000 Decision 与
- *     Alternatives。这是一个有生态系统级影响的选择，不是
- *     Procurement OS 自己单方面能"消化"的决定：它意味着谱系 B
- *     现在有两个真实项目收敛证据（对齐谱系 A 自己的 Tier 晋升
- *     逻辑——如果谱系 A 未来想吸收谱系 B 的经过验证的模式，
- *     Procurement OS 的存在本身就是那个"第二个项目"）。是否要
- *     借此机会启动两条谱系的正式协调/合并，超出本次初始化范围，
- *     列入「九、待确认事项」而非本文件自行决定。
+ * G2.【Q1 — 已批准 / APPROVED，2026-09-09】Procurement OS 正式
+ *     确认为谱系 B（S1-S9 + Capability Layer）的第二个完整
+ *     实现，不是谱系 A（Blueprint 树）的新实现，也不引入第三条
+ *     谱系。官方关系图（本次决定采用，以后续版本为准）：
+ *
+ *       UEF v1.12
+ *           │
+ *           └── §0.6 governance overlay
+ *                   │
+ *                   └── S1–S9 Domain OS Lifecycle
+ *                           │
+ *                           ├── Inventory OS
+ *                           └── Procurement OS
+ *
+ *     明确澄清：这不代表 Universal Domain OS Blueprint v1.2
+ *     "无效"或被否定——只代表在这个生态系统里，Inventory OS 已经
+ *     建立了被採纳的 Domain OS runtime/lifecycle 谱系，Procurement
+ *     OS 选择与它保持兼容，而不是引入第二套互相竞争的 runtime
+ *     架构。谱系 A/B 是否要正式协调/合并，仍然超出 Procurement
+ *     OS 自己的范围，但不再是本项目的"待确认事项"——对
+ *     Procurement OS 而言，这个问题已经关闭。
  *
  * G3. 本文件不假设"Domain Blueprint V2"（出现在已确认错置的
  *     Inventory OS V2.1 旧文件里）与谱系 A 或谱系 B 是同一份
@@ -444,41 +624,39 @@
  */
 
 /* ============================================================
- * 九、待确认事项 (OPEN QUESTIONS REQUIRING STEVEN'S DECISION)
+ * 九、已解决事项与遗留细节
  * ============================================================
  *
- * Q1. 【最高优先级】是否同意 Procurement OS 采用 Inventory OS
- *     的 S1-S9 + Capability Layer 标准（谱系 B），而不是
- *     Universal Domain OS Blueprint 的树状结构（谱系 A）？
- *     见 G1-G2、ADR-000。本文件目前的全部内容都建立在"同意"
- *     这个前提之上——如果答案是否定的，八、二、三、四节需要
- *     重写。
+ * Q1–Q5（原「待确认事项」）已于 2026-09-09 全部关闭，决定分别
+ * 记录于：
+ *   Q1（架构谱系）      → 本文件 G2、ADR-000
+ *   Q2（部署边界）      → 本文件三、、ADR-002
+ *   Q3（Inventory 契约） → 本文件五、5.1/5.2（范围外，不修改
+ *                          Inventory OS）
+ *   Q4（Telegram UX）   → 本文件五、5.4、P9、ADR-001
+ *   Q5（Bridge 幂等性） → 本文件五、5.5、C15/P10、ADR-003
  *
- * Q2. Procurement OS 的实际部署形态：是与 Inventory OS 共享
- *     同一个 Google Spreadsheet / Apps Script 项目（"Domain OS"
- *     只是代码组织边界），还是真正独立的 GAS 项目/Spreadsheet
- *     （需要显式 SPREADSHEET_ID 跨项目访问 IDENTITY_REGISTRY 与
- *     TASKS）？ADR-000 的核心问题（"为什么要独立成 GAS
- *     project"）在两种部署形态下答案完全不同，见 ADR-000。
+ * 以下是关闭过程中新产生、仍然是"细节留待实现阶段"而非"架构级
+ * 悬而未决"的项目：
  *
- * Q3. Inventory OS 现有的 sendProcurementRequest() stub 目前只
- *     发送 { itemId, identityId, itemName, urgency } 四个字段，
- *     比本文件五、1 定义的完整 Contract 窄很多。补齐
- *     estimated_quantity / reason / required_before 需要修改
- *     Inventory OS 自己的 29_InventoryBridge.gs——这是否属于本次
- *     任务范围，还是留给 Inventory OS 下一次迭代？
+ * D1. AWAITING_CONFIRMATION 新增 EXPIRED 终态（区别于用户主动
+ *     REJECTED）。默认超时时长建议 24 小时（对齐 urgency=CRITICAL
+ *     场景"剩余天数<3天"的紧迫性——等太久确认失去意义），但这个
+ *     数字是可调参数，不是架构决定，实现时可按 urgency 分级
+ *     （比如 CRITICAL 24 小时、HIGH 48 小时、NORMAL 72 小时），
+ *     具体分级留给实现阶段。
  *
- * Q4. User Confirmation 的实际 UX 机制：沿用 Inventory OS 已有的
- *     Telegram 命令模式（用户回复 /confirm <request_id> 或类似
- *     命令），还是需要别的机制？64_ProcurementUserConfirmation.gs
- *     的具体实现依赖这个答案。
+ * D2. P9 提到的"decided_quantity 变化容忍度"没有给出具体数字
+ *     （比如±10%内不算实质变化）。这是一个可以在实现阶段按
+ *     真实使用情况调整的参数，不阻塞 Architecture Freeze。
  *
- * Q5. 【Verification Gate 自查中发现，非原始任务指令逐项列出】
- *     69_ProcurementBridge.receiveFromInventory() 目前没有幂等性
- *     保护——Inventory 一侧若因网络问题重试同一次
- *     sendProcurementRequest() 调用，会产生重复的
- *     PROCUREMENT_REQUESTED 记录。需要类似 Inventory OS 自己
- *     Telegram webhook 用过的 updateId+CacheService 去重模式，
- *     但具体用什么做 correlation_id（谁生成、生命周期多长）需要
- *     先确定，见 00_Project_State.gs 八、Recovery Gate。
+ * D3. 5.5 的 idempotency_key 字段命名（source_domain +
+ *     source_reference + urgency 的组合方式）是本文件在没有
+ *     真正的 UEF v1.12 原文可核对的情况下给出的最佳判断——若
+ *     Steven 手上有 UEF v1.12 对幂等键命名的既定约定，应以那份
+ *     为准，本文件的命名不是不可调整的架构决定。
+ *
+ * 以上三项均不构成 Architecture Freeze 的阻塞项——它们是"已经
+ * 有一个合理默认值，可以在实现阶段按真实反馈微调"的参数，不是
+ * "没有决定就无法继续"的架构缺口。
  */

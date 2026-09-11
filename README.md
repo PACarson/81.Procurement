@@ -1,27 +1,26 @@
 # Procurement OS
 
-**Module range:** 60–69 (Domain) + shared Core Capability Layer (`00_Capability_*`, owned by the Inventory OS repository)
+**Module range:** 60–69 (Domain) + shared Core Capability Layer (`00_Capability_*`, owned by the Inventory OS repository, accessed via a shared ecosystem Spreadsheet — ADR-002)
 
-**Purpose:** Owns the lifecycle of procurement demand within its approved scope — Request → Plan → Decision → User Confirmation → Execution Handoff → History/Insight. It is not Inventory OS, not Finance OS, not a Supplier CRM, not Accounting OS, not Warehouse OS, not Payment OS, and not a generic task manager.
+**Purpose:** Owns the lifecycle of procurement demand — Request → Normalize → Plan → Decision → User Confirmation → Execution Handoff → Events → Projection → Insights → Bridge. Not Inventory OS, not Finance OS, not a Supplier CRM, not Accounting OS, not Warehouse OS, not Payment OS, not a generic task manager.
 
-**Architecture status:** Architecture Initialization. No `.gs`/`.js` implementation files exist under 60–69. No `PROCUREMENT_REQUESTS` or `PROC_LEDGER` sheets exist. The integration point on the Inventory OS side (`sendProcurementRequest()` in `29_InventoryBridge.gs`) is currently a stub that only logs to console.
+**Implementation status: Slice 1 implemented and empirically verified (2026-09-10).**
+- Implemented: `00_Config.js`, `00_Setup.js`, `60`–`67`, `69` (9 files)
+- Not yet implemented (by design, see State §6): `68_ProcurementInsights.js`
+- Verification: 12/12 test-matrix items PASS against the actual executed code (`implementation/test-harness.js` fakes the GAS runtime and runs the real modules — not asserted, run). Three real bugs were found and fixed during this process; see State §9 for what they were.
+- **Not yet verified:** true concurrent execution and real Sheets/LockService behavior in an actual GAS environment (the test harness runs in Node with a single-threaded fake). This is called out explicitly, not glossed over — see State §9 Risk Register H1/H3.
 
-**Governance status:** Full governance package drafted from repository evidence (`00_Project_Constitution.js`, `00_Project_State.js`, `00_File_Map.js`, `00_ADR.js`). Two architecture decisions recorded (ADR-000: independent Domain OS; ADR-001: explicit User Confirmation boundary). Four open questions remain for owner sign-off — see `00_Project_Constitution.js` §9.
-
-**Current phase:** Architecture Initialization — governance and design only, per explicit instruction not to begin implementation until the open questions below are resolved.
+**Governance:** Q1–Q5 closed (2026-09-09). Four ADRs: ADR-000 (independent Domain OS, adopts Inventory OS's S1–S9 + Capability Layer lineage), ADR-001 (User Confirmation as a hard, channel-agnostic, snapshot-scoped authorization boundary), ADR-002 (independent GAS runtime, temporarily shared persistence), ADR-003 (Bridge inbound idempotency, with its limitation explicitly labeled "GOVERNED V0.x IDEMPOTENCY LIMITATION").
 
 **Source-of-truth files (in priority order):**
-1. `00_Project_Constitution.js` — architecture contract, principles, open questions
-2. `00_File_Map.js` — per-module spec for all 60–69 files
-3. `00_ADR.js` — ADR-000 and ADR-001 in full
-4. `00_Project_State.js` — phase, repository diagnosis, design decisions, next steps
+1. `00_Project_Constitution.js` — principles (P1–P10), contracts (§5), governance baseline (§8)
+2. `00_File_Map.js` — per-module spec + implementation status for every 60–69 file
+3. `00_ADR.js` — ADR-000 through ADR-003 in full
+4. `00_Project_State.js` — phase, closure record, Slice 1 implementation record (readiness findings, bugs found & fixed, real test results, risk register)
+5. `implementation/` — the actual Slice 1 code + `test-harness.js`
 
-**Implementation status:** 0% — governance and architecture only. Do not treat any prior `00_Project_Constitution` / `00_Project_State` / `00_File_Map` content found elsewhere in this repository's history as authoritative for Procurement OS: that content belonged to Inventory OS V2.1 (modules 21–26) and was misplaced here.
+**Known upstream limitation (by design, not a gap):** Inventory OS's real `sendProcurementRequest()` payload today is only `{ itemId, identityId, itemName, urgency }`. `estimated_quantity`, `unit`, `reason`, and `required_before` are nullable in Procurement's contract and are never fabricated. Enriching Inventory OS's payload is tracked as an "UPSTREAM FOLLOW-UP — INVENTORY OS" item, not a Procurement OS blocker (State §9-G).
 
-**Open questions requiring owner decision before implementation begins:**
-- Q1 — Adopt Inventory OS's own "Domain OS Lifecycle Standard" (S1–S9 + Capability Layer) as Procurement OS's architecture baseline, rather than the separately-maintained Universal Domain OS Blueprint tree?
-- Q2 — Deployment: same Google Spreadsheet/Apps Script project as Inventory OS, or a genuinely separate one (which would require explicit cross-project access to `IDENTITY_REGISTRY` and `TASKS`)?
-- Q3 — Who updates Inventory OS's `sendProcurementRequest()` stub to send the full request contract — this task, or a future Inventory OS iteration?
-- Q4 — What is the actual Telegram UX for User Confirmation?
+**Before deploying:** set `PROC_CONFIG.SPREADSHEET_ID` in `00_Config.js` to the real shared ecosystem Spreadsheet ID, add Procurement OS as a Library dependency wherever Telegram commands are routed (assumed to be Personal AI Core/JARVIS, by analogy with Inventory OS's `handleInventoryCommand` — this analogy is flagged as unverified in State §9-A, not confirmed against JARVIS's own code), then run `setupProcurementOS()` once.
 
-Full detail and rationale for all four: `00_Project_Constitution.js` §9.
+**Next decision point (not a code task):** Slice 2 (real Inventory wiring + real Telegram + real Task creation) depends on cross-repo coordination that Procurement OS cannot resolve unilaterally — see State §9-I.

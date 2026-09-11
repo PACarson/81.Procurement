@@ -13,6 +13,10 @@
  * 状态图例（每个文件后标注）：
  *   [PLANNED]     — 本文件已设计（本 File_Map 内有完整规格），
  *                   尚未写一行代码
+ *   [IMPLEMENTED — Slice 1] — 2026-09-10 已实际写出并通过
+ *                   12/12 项 test-harness.js 验证（真实执行，
+ *                   非断言）；真实 GAS 环境的并发行为仍未验证，
+ *                   见 State §9 Risk Register H1/H3
  *   [EXISTS]      — 代码已存在（本仓库里没有任何一个 60–69 文件
  *                   处于这个状态）
  *   [STUB-UPSTREAM] — 不属于 Procurement OS 自己的文件，但
@@ -38,10 +42,12 @@
  */
 
 /* ============================================================
- * 二、DOMAIN FILES（Procurement OS 专属，60–69）—— 全部 [PLANNED]
+ * 二、DOMAIN FILES（Procurement OS 专属，60–69）—— Slice 1 范围
+ *    内（60/61/62/63/64/65/66/67/69）已 [IMPLEMENTED]；
+ *    68_ProcurementInsights 按计划维持 [PLANNED]（State §6）
  * ============================================================
  *
- * 60_ProcurementRequest.gs         [S1 Request] [PLANNED]
+ * 60_ProcurementRequest.gs         [S1 Request] [IMPLEMENTED — Slice 1]
  * ------------------------------------------------------------
  *   Purpose      入站请求的唯一入口。接收来自 69_ProcurementBridge
  *                （代表某个 Domain Adapter，目前只有 Inventory）
@@ -68,7 +74,7 @@
  *                的 payload 都能正确路由到 Normalizer），不需要
  *                独立单元测试覆盖业务规则（本层没有业务规则）
  *
- * 61_ProcurementNormalizer.gs      [S2 Normalizer] [PLANNED]
+ * 61_ProcurementNormalizer.gs      [S2 Normalizer] [IMPLEMENTED — Slice 1]
  * ------------------------------------------------------------
  *   Purpose      把任意来源域的原生 payload 映射为标准
  *                ProcurementRequest Contract（Constitution 五、
@@ -92,7 +98,7 @@
  *                Inventory payload，验证映射结果字段完全符合
  *                5.1 契约
  *
- * 62_ProcurementPlanner.gs         [S3 Planner] [PLANNED]
+ * 62_ProcurementPlanner.gs         [S3 Planner] [IMPLEMENTED — Slice 1]
  * ------------------------------------------------------------
  *   Purpose      按 identity_id 聚合同一物品的多笔待处理请求
  *                （例如同一天 Inventory 对同一物品连续发了 2 次
@@ -102,8 +108,10 @@
  *   Outputs      plan() → PlanObject { identity_id, mergedQuantity,
  *                highestUrgency, contributingRequestIds[], ... }
  *   Dependencies 读取 67_ProcurementProjection 取得同一
- *                identity_id 目前尚未 CLOSED/CANCELLED 的其他
- *                请求（用于聚合判断）；下游：63_ProcurementDecision
+ *                identity_id 目前仍处于非终态（REQUESTED/PLANNED/
+ *                AWAITING_CONFIRMATION/CONFIRMED——不含
+ *                CLOSED/CANCELLED/REJECTED/EXPIRED）的其他请求
+ *                （用于聚合判断）；下游：63_ProcurementDecision
  *   Persistence  只读（经 Projection，不直接读 PROC_LEDGER 或
  *                PROCUREMENT_REQUESTS 原始表）
  *   Public API   plan(normalizedRequest, context)
@@ -116,7 +124,7 @@
  *                "不同 identity 不应合并"、"已 CLOSED 的请求不
  *                参与聚合"等场景
  *
- * 63_ProcurementDecision.gs        [S4 Decision] [PLANNED]
+ * 63_ProcurementDecision.gs        [S4 Decision] [IMPLEMENTED — Slice 1]
  * ------------------------------------------------------------
  *   Purpose      decide()：是否值得进入 User Confirmation 流程、
  *                建议数量/时机——仅为预览，用于 Execution 加锁前
@@ -146,51 +154,78 @@
  *                estimated_quantity 异常值处理等）
  *
  * 64_ProcurementUserConfirmation.gs  [S4.5，Procurement 专属新增层]
- * ------------------------------------------------------------  [PLANNED]
- *   Purpose      P4 / ADR-001 的具体实现载体。把 Decision 的
- *                recommend=true 结果，经 Bridge 呈现给真实用户
- *                （Telegram），并且是唯一能记录用户"确认"或
- *                "拒绝"的模块。这是本文件与 Inventory OS S1-S9
- *                标准相比唯一新增的一层——因为 Inventory 自己的
- *                Decision/Execution 从不需要人类在"决定"和
- *                "执行"之间批准一次，Procurement 因为涉及真实
- *                采购承诺，必须有
- *   Inputs       promptConfirmation(requestId, decisionObject)
+ * ------------------------------------------------------------  [IMPLEMENTED — Slice 1]
+ *   Purpose      P4/P9/ADR-001 的具体实现载体，渠道无关（Q4）。
+ *                把 Decision 的 recommend=true 结果连同一份不可
+ *                变快照（identity_id/decided_quantity/urgency）
+ *                一起呈现给用户，并且是唯一能把结果记录为
+ *                CONFIRM/REJECT/EXPIRE 三种之一的模块。自己不
+ *                知道"Telegram"——实际收发交给下面的 Telegram
+ *                Adapter 子组件，未来加 Web/Mobile 等新渠道只是
+ *                新增一个平行 Adapter，本模块的状态与规则不变。
+ *                这是本文件与 Inventory OS S1-S9 标准相比唯一
+ *                新增的一层——Inventory 自己的 Decision/Execution
+ *                从不需要人类在"决定"和"执行"之间批准一次，
+ *                Procurement 因为涉及真实采购承诺，必须有
+ *   Inputs       promptConfirmation(requestId, decisionSnapshot)
  *                recordUserResponse(requestId, actorId, response)
- *                — response ∈ {CONFIRM, REJECT}
- *   Outputs      recordUserResponse() → 
+ *                — response ∈ {CONFIRM, REJECT, EXPIRE}
+ *                checkExpiry(requestId) — 由定时触发器调用，
+ *                超过 Constitution 九、D1 时限未响应则产出
+ *                response=EXPIRE
+ *   Outputs      recordUserResponse() →
  *                ConfirmationRecord { requestId, response, actorId,
- *                respondedAt }（预览性质，Execution 仍需重新校验）
- *   Dependencies 经 69_ProcurementBridge 发送 Telegram 提示；
- *                下游：65_ProcurementExecution 读取（不是"调用"）
- *                本模块产出的 ConfirmationRecord
+ *                respondedAt, confirmedSnapshot }（预览性质，
+ *                Execution 仍需重新校验，confirmedSnapshot 就是
+ *                呈现时那份快照，供 Execution 比对 P9 的"实质
+ *                变化"判断）
+ *   Dependencies 经 Telegram Adapter（本模块子组件，经
+ *                69_ProcurementBridge 的通用收发能力发消息，但
+ *                CONFIRM/REJECT/EXPIRE 的判定逻辑属于本模块，
+ *                不属于 69）；下游：65_ProcurementExecution 读取
+ *                （不是"调用"）本模块产出的 ConfirmationRecord
  *   Persistence  ConfirmationRecord 可暂存于请求级内存缓存，
  *                真正落盘由 Execution 完成（对齐 P6：Check 与
  *                Use 同一临界区）
- *   Public API   promptConfirmation(requestId, decisionObject)
+ *   Public API   promptConfirmation(requestId, decisionSnapshot)
  *                recordUserResponse(requestId, actorId, response)
+ *                checkExpiry(requestId)
  *   Forbidden    绝对禁止任何代码路径在未收到真实用户输入的情况
  *                下自动产出 response=CONFIRM（P4，最高优先级
- *                原则）；绝不直接写 PROCUREMENT_REQUESTS 的
- *                status 字段——那仍是 Execution 的职责，本模块
- *                只是"记录用户说了什么"的权威来源，不是"落地
- *                这个决定"的权威来源
- *   Testing      response 记录逻辑可自动化测试；Telegram 提示的
- *                实际收发必须手动测试（I/O 依赖，对齐 Steven 的
- *                测试哲学：纯逻辑自动化 + I/O 手动 checklist）
+ *                原则；EXPIRE 是系统在超时后产生的，但产出的是
+ *                "未确认"的事实，不是伪造一个 CONFIRM）；绝不
+ *                直接写 PROCUREMENT_REQUESTS 的 status 字段——
+ *                那仍是 Execution 的职责；Telegram Adapter 子
+ *                组件绝不允许绕过本模块直接判定确认结果——渠道
+ *                只负责传话，不负责裁决（Q4）
+ *   Testing      response 记录逻辑、快照比对逻辑可自动化测试；
+ *                Telegram 收发与超时触发的实际链路必须手动测试
+ *                （I/O 依赖，对齐 Steven 的测试哲学：纯逻辑
+ *                自动化 + I/O 手动 checklist）
  *
- * 65_ProcurementExecution.gs       [S5 Execution] [PLANNED]
+ * 65_ProcurementExecution.gs       [S5 Execution] [IMPLEMENTED — Slice 1]
  * ------------------------------------------------------------
  *   Purpose      唯一写 PROCUREMENT_REQUESTS 表的层；唯一
- *                LockService 脚本锁持有者。加锁 → 重新读取该
- *                请求的权威状态 → 重新校验 64 层记录的
- *                ConfirmationRecord 是否真的是 CONFIRM →
- *                调用 63_ProcurementDecision.recompute() 取得
- *                权威 DecisionObject → 写入 → 释放锁（完整对齐
- *                Inventory OS C12/A10 "加锁→重读→recompute()→
- *                写入→释放锁"固定顺序）
- *   Inputs       executeConfirmed(requestId) /
+ *                LockService 脚本锁持有者。两条入口路径：
+ *                (a) intake 路径（新请求进入时）：加锁 → 用
+ *                    idempotency_key 查是否已有同一请求的非终态
+ *                    记录（C15/P10/ADR-003）→ 已存在则直接返回
+ *                    既有结果不新建；不存在则写入 REQUESTED →
+ *                    释放锁
+ *                (b) confirmation 路径：加锁 → 重新读取该请求的
+ *                    权威状态 → 重新校验 64 层记录的
+ *                    ConfirmationRecord 是否真的是 CONFIRM，且
+ *                    其 confirmedSnapshot 与当前权威状态一致
+ *                    （P9 实质变化检查——不一致则不执行，改写
+ *                    回 AWAITING_CONFIRMATION 并记录原因）→
+ *                    一致才调用 63_ProcurementDecision.recompute()
+ *                    取得权威 DecisionObject → 写入 → 释放锁
+ *                两条路径都完整对齐 Inventory OS C12/A10
+ *                "加锁→重读→recompute()→写入→释放锁"固定顺序
+ *   Inputs       executeIntake(candidateRequest, idempotencyKey)
+ *                executeConfirmed(requestId) /
  *                executeRejected(requestId) /
+ *                executeExpired(requestId) /
  *                executeCancelled(requestId, reason)
  *   Outputs      写入 PROCUREMENT_REQUESTS 权威行；调用
  *                66_ProcurementEvents.record(...)；调用
@@ -200,21 +235,27 @@
  *                不调用其函数触发新逻辑）；
  *                66_ProcurementEvents.record()；
  *                69_ProcurementBridge（Task 创建、状态通知）
- *   Persistence  PROCUREMENT_REQUESTS（写）；触发 PROC_LEDGER
+ *   Persistence  PROCUREMENT_REQUESTS（写，含 idempotency_key 与
+ *                confirmed_snapshot_json 两列）；触发 PROC_LEDGER
  *                （经 Events 写，同一临界区）
- *   Public API   executeConfirmed(requestId)
+ *   Public API   executeIntake(candidateRequest, idempotencyKey)
+ *                executeConfirmed(requestId)
  *                executeRejected(requestId)
+ *                executeExpired(requestId)
  *                executeCancelled(requestId, reason)
  *   Forbidden    绝不信任任何上游模块产出的"预览"值直接写入——
  *                必须重新读取+recompute()（P6）；绝不允许
  *                66/69 的相关函数在本层释放锁之后、或在本层
- *                加锁之前被调用（C12）
- *   Testing      核心加锁/重读/写入顺序需要手动并发测试（对齐
- *                Inventory OS 的手动并发验证方式：两个几乎同时
- *                的执行，确认不会有请求被覆盖或重复执行）；
- *                纯计算部分（不含锁）可自动化测试
+ *                加锁之前被调用（C12）；绝不在 intake 路径的
+ *                幂等检查与写入之间释放锁（C15——检查和写入必须
+ *                是同一个临界区，不能查完就放锁再决定要不要写）
+ *   Testing      两条入口路径的加锁/重读/写入顺序都需要手动并发
+ *                测试（对齐 Inventory OS 的手动并发验证方式：
+ *                两个几乎同时的执行，确认不会有请求被覆盖、
+ *                重复创建、或用旧快照放行新提案）；纯计算部分
+ *                （不含锁）可自动化测试
  *
- * 66_ProcurementEvents.gs          [S6 Events] [PLANNED]
+ * 66_ProcurementEvents.gs          [S6 Events] [IMPLEMENTED — Slice 1]
  * ------------------------------------------------------------
  *   Purpose      不可变 Ledger（PROC_LEDGER）。记录 8 种固定
  *                事件类型（Constitution 五、5.3）
@@ -236,7 +277,7 @@
  *                （对齐 Inventory OS 对 Ledger 不可变性的处理
  *                方式——这是架构约束，不是可测试的运行时行为）
  *
- * 67_ProcurementProjection.gs      [S7 Projection] [PLANNED]
+ * 67_ProcurementProjection.gs      [S7 Projection] [IMPLEMENTED — Slice 1]
  * ------------------------------------------------------------
  *   Purpose      维护 PROCUREMENT_REQUESTS 的 Read Model，是
  *                查询唯一真相来源（P5）
@@ -277,7 +318,7 @@
  *   Testing      V0.1 阶段无需测试（未实现）；未来实现后对齐
  *                Inventory OS 28_InventoryInsights 的测试模式
  *
- * 69_ProcurementBridge.gs          [S9 Bridge] [PLANNED]
+ * 69_ProcurementBridge.gs          [S9 Bridge] [IMPLEMENTED — Slice 1]
  * ------------------------------------------------------------
  *   Purpose      唯一对外窗口。接收 Inventory OS（及未来其他
  *                Domain OS）的入站请求；创建/更新 TASKS；经
@@ -290,18 +331,23 @@
  *   Outputs      调用 60_ProcurementRequest.receiveRequest(...)
  *   Dependencies 上游：Inventory OS 29_InventoryBridge.gs
  *                （STUB-UPSTREAM——对方目前只调用 console.log，
- *                真正接线需要 Inventory OS 一侧也更新，见
- *                Constitution 九、Q3）；下游：
+ *                真正接线需要 Inventory OS 一侧也更新——记录为
+ *                Inventory OS 未来迭代事项，非本次范围，见
+ *                Constitution 五、5.2）；下游：
  *                60_ProcurementRequest；TASKS 表；Telegram
+ *                （运输层）
  *   Persistence  TASKS（写，source_system='ProcurementOS'）
  *   Public API   receiveFromInventory(payload)
  *                createOrUpdateTask(requestId, ...)
- *                notifyTelegram(message)
- *                promptUserConfirmation(requestId, decisionObject)
- *                — 供 64 层调用
+ *                sendTelegramMessage(chatContext, message) — 纯
+ *                运输层发送，不判断消息内容的业务含义；64 层的
+ *                Telegram Adapter 子组件调用这个函数发消息，
+ *                但 CONFIRM/REJECT/EXPIRE 的判定逻辑留在 64
+ *                自己那里，不下放到本函数（Q4：渠道只管传话）
  *                resetRequestCache()
- *   Forbidden    不含业务逻辑，不含 Decision 逻辑；绝不自行
- *                加锁（C12）
+ *   Forbidden    不含业务逻辑，不含 Decision 逻辑，不含
+ *                CONFIRM/REJECT/EXPIRE 判定逻辑（那属于 64，
+ *                Q4）；绝不自行加锁（C12）
  *   Testing      纯路由/IO 部分手动测试（Telegram 收发、Task
  *                创建去重）；payload 映射部分可自动化测试
  */
@@ -314,23 +360,30 @@
  * 00_Project_State.gs         — 进度 / 决策记录 / 下一步 [EXISTS]
  * 00_File_Map.gs               — 本文件 [EXISTS]
  * 00_ADR.gs                    — ADR 索引（ADR-000, ADR-001...）[EXISTS]
- * 00_Config.gs                 — 【待定，见 Constitution 九、Q2】
- *                                 若与 Inventory OS 共享部署，
- *                                 不需要独立副本；若独立部署，
- *                                 需要自己的 PROC_CONFIG 常量 +
- *                                 独立的 _reserveIdBlock() 
- *                                 PropertiesService key 前缀
- * 00_Setup.gs                  — 【尚未创建】一次性初始化、
- *                                 建表（PROCUREMENT_REQUESTS /
- *                                 PROC_LEDGER），需在此阶段落实
- *                                 六、SHEET SCHEMA 待确认事项
- *                                 （setNumberFormat 保护）
+ * 00_Config.gs                 — [IMPLEMENTED — Slice 1]
+ *                                 PROC_CONFIG（R/L 列映射、9 态、
+ *                                 9 事件类型、超时/容忍度参数）+
+ *                                 本地 _procNow/_procEsc/
+ *                                 _reserveIdBlock。唯一未定：
+ *                                 SPREADSHEET_ID 留空待 Steven
+ *                                 提供真实值（ADR-002 已定方向，
+ *                                 差的是具体 ID，不是架构决定）
+ * 00_Setup.gs                  — [IMPLEMENTED — Slice 1]
+ *                                 setupProcurementOS()（幂等，
+ *                                 依赖 IDENTITY_REGISTRY/TASKS 已
+ *                                 存在才继续，建表时对全部时间戳
+ *                                 列强制 setNumberFormat('@')）+
+ *                                 smokeTestProcurementOS()（对齐
+ *                                 Inventory OS 的手动核对风格）。
+ *                                 均已用 Node 伪造 GAS 环境实际
+ *                                 跑过，见 State §9
  *
  * ============================================================
  * 四、模块关系图
  * ============================================================
  *
- *   Inventory OS 29_InventoryBridge (STUB-UPSTREAM)
+ *   Inventory OS 29_InventoryBridge (STUB-UPSTREAM，独立 GAS
+ *   Project，经 request/event 往来，非代码依赖 —— ADR-002)
  *   Future: Property OS / Finance OS / Manual Telegram command
  *        │
  *        ▼
@@ -341,7 +394,10 @@
  *        │
  *        ▼
  *   61_ProcurementNormalizer        [S2] ──► 00_Capability_Identity
- *        │                                    (Inventory OS 仓库)
+ *        │        │                          (Inventory OS 仓库，
+ *        │        │                          经共享 Spreadsheet
+ *        │        │                          访问 —— ADR-002)
+ *        │        └─计算 idempotency_key（5.5）
  *        ▼
  *   62_ProcurementPlanner           [S3]  (聚合/去重，读 Projection)
  *        │
@@ -349,14 +405,20 @@
  *   63_ProcurementDecision          [S4]  decide()=预览
  *        │
  *        ▼ (recommend=true 时)
- *   64_ProcurementUserConfirmation  [S4.5] ──► 69 (Telegram 提示)
- *        │  (等待真实用户输入)
+ *   64_ProcurementUserConfirmation  [S4.5]  渠道无关 Core
+ *        │        └── Telegram Adapter（子组件，经 69 传话，
+ *        │             CONFIRM/REJECT/EXPIRE 判定留在 64 —— Q4）
+ *        │  (等待真实用户输入，或超时 EXPIRE)
  *        ▼
  *   65_ProcurementExecution         [S5]  ★唯一加锁点★
- *        │   加锁→重读→重新校验confirmation→recompute()→写入→释放锁
+ *        │   intake路径：加锁→查idempotency_key→已存在则返回
+ *        │              既有结果/否则写入REQUESTED→释放锁（ADR-003）
+ *        │   confirmation路径：加锁→重读→重新校验confirmation
+ *        │              是否针对当前快照（P9）→recompute()→
+ *        │              写入→释放锁
  *        ▼
  *   66_ProcurementEvents            [S6]  (PROC_LEDGER, append-only,
- *        │                                 无自身锁)
+ *        │                                 无自身锁，9 种事件类型)
  *        ▼
  *   67_ProcurementProjection        [S7]  (Read Model)
  *        │ pub/sub
@@ -364,9 +426,10 @@
  *        │
  *        ▼
  *   69_ProcurementBridge             [S9]  (Task 创建/更新，
- *                                           状态通知，无自身锁)
- *        ├──► TASKS
- *        ├──► Telegram
+ *                                           Telegram 运输层，
+ *                                           无自身锁)
+ *        ├──► TASKS（经共享 Spreadsheet —— ADR-002）
+ *        ├──► Telegram（运输层，业务判定不在这里 —— Q4）
  *        └──► (future) 实际下单执行 adapter
  *
  *   依赖方向：60→61→[C:Identity]→62→63→[64]→65→66→67→69
