@@ -22,16 +22,21 @@ var ProcurementPlanner = (function () {
   'use strict';
 
   function plan(normalizedRequest) {
-    var openSiblings = ProcurementProjection.listOpenByIdentity(normalizedRequest.identity_id)
-      .filter(function (row) { return row.source_domain === normalizedRequest.source_domain; });
+    // CLOSEOUT FINDING (found via test #14, not part of the original
+    // checklist): earlier version filtered this lookup to the SAME
+    // source_domain only, so an Inventory-sourced open request and a
+    // Manual request for the identical item would never see each
+    // other as siblings — exactly the case a human would consider
+    // obviously related. Sibling-awareness is a business-level "is
+    // there already related work in flight for this physical item"
+    // check, not a per-source-domain concern, so it now looks across
+    // ALL source domains. This does NOT touch the idempotency key
+    // (source_domain remains part of that, unchanged, per the
+    // closeout instruction not to alter it without evidence it is
+    // wrong) — it only widens what counts as an informational sibling
+    // for Decision's rationale text.
+    var openSiblings = ProcurementProjection.listOpenByIdentity(normalizedRequest.identity_id);
 
-    // Slice 1: if an open sibling already exists for this exact
-    // identity+source, don't propose a second independent plan —
-    // this is a narrower, source-scoped cousin of the idempotency
-    // check (which is about *delivery* duplicates; this is about
-    // *business* duplicates, e.g. two different-but-related signals
-    // for the same underlying need). Full urgency-upgrade/merge
-    // logic is deferred (see note above).
     var hasOpenSibling = openSiblings.length > 0;
 
     return {

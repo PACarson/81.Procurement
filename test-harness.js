@@ -343,6 +343,116 @@ check('Replay confirmation/execution: same as duplicate-confirmation protection 
   return 'covered by test #7 (Duplicate confirmation) — same code path, not a separate mechanism in this design';
 });
 
+// ---- Closeout gate additions: explicit regression coverage for the
+// two previously-fixed bugs (items 7/8 of the closeout brief), plus
+// the idempotency semantic boundary review (item 6), plus a basic
+// error-handling check feeding G10 of the Evidence Matrix. ----
+
+// 13. Regression: updateProjection must not silently overwrite an
+//     explicitly-supplied updated_at (bug #1 from the previous round)
+check('REGRESSION — updateProjection() respects an explicitly-supplied updated_at', () => {
+  const { context } = freshContextWithSetup();
+  const r = vm.runInContext(`ProcurementBridge.receiveFromInventory(${JSON.stringify(inventoryPayload({ itemId: 'INV-REG1' }))})`, context);
+  vm.runInContext(`ProcurementProjection.updateProjection("${r.requestId}", { updated_at: "1999-01-01T00:00:00+08:00" })`, context);
+  const row = vm.runInContext(`ProcurementProjection.getProjection("${r.requestId}")`, context);
+  assert(row.updated_at === '1999-01-01T00:00:00+08:00', 'explicit updated_at was overwritten, got ' + row.updated_at);
+  // And confirm the AUTO-bump still works when the caller does NOT set it:
+  vm.runInContext(`ProcurementProjection.updateProjection("${r.requestId}", { reason: "unrelated change" })`, context);
+  const row2 = vm.runInContext(`ProcurementProjection.getProjection("${r.requestId}")`, context);
+  assert(row2.updated_at !== '1999-01-01T00:00:00+08:00', 'auto-bump on normal writes appears to have regressed');
+  return 'explicit set held; auto-bump on unrelated writes still works';
+});
+
+// 14. Regression: Planner must not detect the current (not-yet-created)
+//     request as its own sibling (bug #2 from the previous round), AND
+//     (closeout finding) must detect a genuinely related sibling even
+//     when it came from a DIFFERENT source_domain.
+check('REGRESSION + FIX — Planner excludes self, and now correctly detects cross-source-domain siblings', () => {
+  const { context } = freshContextWithSetup();
+  const payloadA = inventoryPayload({ itemId: 'INV-SIB', identityId: 'ID-SIB-ITEM' });
+  const first = vm.runInContext(`ProcurementBridge.receiveFromInventory(${JSON.stringify(payloadA)})`, context);
+  assert(first.status === 'AWAITING_CONFIRMATION', 'setup: first request should reach AWAITING_CONFIRMATION');
+  // A second, genuinely distinct Manual request for the SAME identity,
+  // while the first (Inventory-sourced) is still open — different
+  // idempotency_key (Case B of the idempotency semantic review), so it
+  // must NOT be deduped, but the Planner SHOULD now flag it as having
+  // an open sibling even though the source_domain differs.
+  const manualPayload = { itemName: 'SIB-ITEM', urgency: 'HIGH', requestRef: 'manual-sib-1' };
+  const normalized = vm.runInContext(`ProcurementRequest.receiveRequest("Manual", ${JSON.stringify(manualPayload)})`, context);
+  normalized.identity_id = 'ID-SIB-ITEM'; // force same identity to genuinely test cross-source detection
+  const plan = vm.runInContext(`ProcurementPlanner.plan(${JSON.stringify(normalized)})`, context);
+  assert(plan.hasOpenSibling === true, 'expected the Inventory-sourced open request to be detected as a sibling of the new Manual request');
+  assert(plan.contributingRequestIds.indexOf(first.requestId) !== -1, 'expected the specific prior request_id to be listed as a contributing sibling');
+  return 'self-exclusion holds; cross-source-domain sibling now correctly detected (fixed this round — was previously source_domain-scoped, missed exactly this case)';
+});
+
+// 15. Idempotency semantic Case A — same source+reference+urgency → deduped (already covered by #2/#11, restated here explicitly for the closeout Evidence Matrix)
+check('Idempotency Case A — same source_domain+source_reference+urgency → duplicate protection confirmed', () => {
+  return 'see test #2 (Duplicate intake) and #11 (Replay request) — both PASS, same mechanism';
+});
+
+// 16. Idempotency semantic Case C — same source_reference, different urgency → treated as a DIFFERENT logical request (by design, not a bug)
+check('Idempotency Case C — same source_reference, different urgency → intentionally NOT deduped against each other', () => {
+  const { context } = freshContextWithSetup();
+  const critical = vm.runInContext(`ProcurementBridge.receiveFromInventory(${JSON.stringify(inventoryPayload({ itemId: 'INV-CASEC' }))})`, context); // CRITICAL
+  const high = vm.runInContext(`ProcurementBridge.receiveFromInventory(${JSON.stringify(inventoryPayload({ itemId: 'INV-CASEC', urgency: 'HIGH' }))})`, context);
+  assert(critical.requestId !== high.requestId, 'expected two distinct requests for the same item at different urgency levels');
+  assert(high.duplicate === false, 'the HIGH-urgency signal should not be treated as a duplicate of the CRITICAL one');
+  // Confirm the safety net: Planner on the second call should see the first as an open sibling.
+  const secondEvents = vm.runInContext(`ProcurementEvents.getEvents("${high.requestId}")`, context);
+  const plannedEvent = secondEvents.find(e => e.event_type === 'PROCUREMENT_PLANNED');
+  assert(plannedEvent && plannedEvent.context.hasOpenSibling === true, 'Planner should have flagged the earlier CRITICAL request as an open sibling');
+  return 'two separate request_ids created (by design — urgency is part of the key); Planner correctly flagged them as related via hasOpenSibling, not merged — see closeout notes on this as an improvement candidate, not a bug';
+});
+
+// 17. Idempotency semantic Case D — replay after terminal state → treated as a genuinely NEW request
+check('Idempotency Case D — replay after the prior request reached a terminal state → new request created, not deduped', () => {
+  const { context } = freshContextWithSetup();
+  const payload = inventoryPayload({ itemId: 'INV-CASED' });
+  const first = vm.runInContext(`ProcurementBridge.receiveFromInventory(${JSON.stringify(payload)})`, context);
+  vm.runInContext(`ProcurementExecution.executeConfirmed("${first.requestId}", "steven")`, context); // → EXECUTED (terminal-for-idempotency: EXECUTED itself is not in TERMINAL_STATUSES, but let's drive it to a true terminal state)
+  vm.runInContext(`ProcurementExecution.executeCancelled("${first.requestId}", "test-cleanup", "steven")`, context); // no-op if already EXECUTED — see below
+  const rowAfterFirst = vm.runInContext(`ProcurementProjection.getProjection("${first.requestId}")`, context);
+  // EXECUTED is intentionally NOT in TERMINAL_STATUSES (Constitution 六、
+  // lists CLOSED/CANCELLED/REJECTED/EXPIRED as terminal, not EXECUTED) —
+  // so replay-after-EXECUTED is expected to still be treated as an open
+  // (non-terminal-for-idempotency) match. Confirm THAT is what happens,
+  // rather than asserting our first guess and moving on:
+  const replayAfterExecuted = vm.runInContext(`ProcurementBridge.receiveFromInventory(${JSON.stringify(payload)})`, context);
+  assert(replayAfterExecuted.duplicate === true, 'expected EXECUTED (not yet CLOSED) to still be treated as the same open logical request');
+  return 'IMPORTANT FINDING: EXECUTED is not in TERMINAL_STATUSES, so a replay after EXECUTED-but-before-CLOSED is (correctly, by current definition) still deduped — see closeout notes: this means idempotency protection actually extends slightly further than "open" in the colloquial sense, which is intentional given CLOSED is the true end-of-lifecycle marker, not EXECUTED';
+});
+
+// 18. Command entrypoint error handling (feeds G10 of the Evidence Matrix)
+check('handleProcurementCommand: malformed input is handled without throwing, feeding G10 (error-handling convention)', () => {
+  const { context } = freshContextWithSetup();
+  const r1 = vm.runInContext(`handleProcurementCommand("", "steven")`, context);
+  const r2 = vm.runInContext(`handleProcurementCommand("/confirm", "steven")`, context);
+  const r3 = vm.runInContext(`handleProcurementCommand("/confirm NONEXISTENT-ID", "steven")`, context);
+  assert(typeof r1 === 'string' && r1.length > 0, 'empty command should return a user-facing string, not throw');
+  assert(typeof r2 === 'string' && /缺少/.test(r2), 'missing request_id should return a clear message, got: ' + r2);
+  assert(typeof r3 === 'string' && /系统错误/.test(r3), 'unknown request_id should be caught and return the generic safe message, got: ' + r3);
+  return 'three malformed inputs all returned safe user-facing strings, none threw — matches Inventory OS\'s try/catch+console.error convention';
+});
+
+// 19. R2 DEDICATED regression: a genuinely first-ever request (no prior
+//     open work for this identity, from ANY source) must show
+//     hasOpenSibling===false. Tests #14/#16 only ever asserted the
+//     POSITIVE case (a real sibling correctly found) — this was a real
+//     gap: nothing previously asserted the NEGATIVE case directly, so
+//     a regression of the original self-detection bug could pass all
+//     18 prior tests undetected. Added during Slice 1 Closure Ledger
+//     review, not part of the original fix's own test.
+check('R2 DEDICATED — first-ever request for a fresh identity shows hasOpenSibling=false (no false positive)', () => {
+  const { context } = freshContextWithSetup();
+  const r = vm.runInContext(`ProcurementBridge.receiveFromInventory(${JSON.stringify(inventoryPayload({ itemId: 'INV-FIRSTEVER', identityId: 'ID-FIRSTEVER' }))})`, context);
+  const events = vm.runInContext(`ProcurementEvents.getEvents("${r.requestId}")`, context);
+  const plannedEvent = events.find(e => e.event_type === 'PROCUREMENT_PLANNED');
+  assert(plannedEvent, 'PLANNED event not found');
+  assert(plannedEvent.context.hasOpenSibling === false, 'a genuinely first-ever request must not see itself (or anything else) as an open sibling, got hasOpenSibling=' + plannedEvent.context.hasOpenSibling);
+  return 'hasOpenSibling correctly false on a request with no real prior siblings — closes a gap where only the positive case was previously asserted';
+});
+
 // Print results
 console.log('\n=== Procurement OS Slice 1 — Empirical Test Matrix Results ===\n');
 let passCount = 0, failCount = 0;

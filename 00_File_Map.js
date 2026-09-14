@@ -111,7 +111,16 @@
  *                identity_id 目前仍处于非终态（REQUESTED/PLANNED/
  *                AWAITING_CONFIRMATION/CONFIRMED——不含
  *                CLOSED/CANCELLED/REJECTED/EXPIRED）的其他请求
- *                （用于聚合判断）；下游：63_ProcurementDecision
+ *                （用于聚合判断）。【2026-09-11 修正】不再按
+ *                source_domain 过滤——早期版本只在同一来源域内
+ *                找 sibling，导致 Inventory 已开的请求和同一
+ *                物品的 Manual 请求互相看不见对方，这是这轮
+ *                closeout 测试（#14）才发现的真实缺口，不是原始
+ *                检查清单要求的项目。识别范围扩大不影响
+ *                idempotency_key（那个仍然按 source_domain 分，
+ *                未改动）——两者是不同层次的机制，见 Constitution
+ *                五、5.5 与 ADR-003 关于两者关系的说明。
+ *                下游：63_ProcurementDecision
  *   Persistence  只读（经 Projection，不直接读 PROC_LEDGER 或
  *                PROCUREMENT_REQUESTS 原始表）
  *   Public API   plan(normalizedRequest, context)

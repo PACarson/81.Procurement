@@ -10,13 +10,20 @@
  * 一、PHASE
  * ============================================================
  *
- * Phase: Slice 1 Implemented & Empirically Verified（12/12 test
- *        matrix items PASS against real executed code, not
- *        asserted — see 九、）。Modules 66–68 之外的 60–69 domain
- *        files加上 00_Config/00_Setup 已实际写出并跑通。68_Insights
- *        仍按计划排除在 Slice 1 之外（State §6 Implementation
- *        Sequence）。真实 GAS 环境（Sheets/LockService 的真并发）
- *        未验证——见九、Risk Register。
+ * Phase: SLICE 1 — VERIFIED CORE, INTEGRATION PENDING（分类见
+ *        00_Slice1_Closure_Ledger.js）。Slice 2 Entry：BLOCKED
+ *        （00_Slice2_Entry_Gate.js，2026-09-13）。External
+ *        Verification & Cross-OS Contract Closure（2026-09-14，
+ *        见 Procurement_OS_External_Verification_and_CrossOS_
+ *        Contract_Closure_Report.md）：TASKS schema 由 UNKNOWN
+ *        修正为 E1 已验证；跨项目通信路径新增第二个候选（Sheet/
+ *        EventBus 机制，证据来自三个独立来源）；TASK_ID 命名空间
+ *        给出 Option C 建议（等待 Steven 批准，未实现）；Real GAS
+ *        验证维持 EXTERNAL VERIFICATION REQUIRED，附 8 步人工
+ *        验证清单。本轮未改动任何 runtime 代码。
+ *        本文件「九、」「十、」两节保留作历史记录，其中的
+ *        12/12、18/18 等数字是当时的真实快照，不因后续测试增加
+ *        而回头改写。
  *
  * 不做的声明（对齐使用者原始指令 Implementation Gate 的要求，
  * 不能声称还不存在的东西存在）：
@@ -444,4 +451,196 @@
  * 而是等 H1/H3 两项风险和 G 节三个 Upstream Follow-up 有真实
  * 进展后再决定 Slice 2 的启动时机——Slice 2 涉及跨仓库协调
  * （Q3 的后续），不是 Procurement OS 一侧能单方面推进的。
+ */
+
+/* ============================================================
+ * 十、SLICE 1 CLOSEOUT & PRODUCTION READINESS（2026-09-11）
+ * ============================================================
+ * 说明：这一轮的任务指令在第 8 条中途被截断（"Confirm the
+ * previously fixed bug remains fixed: The current Procuremen"）。
+ * 第 8 条按第 7 条同样的句式（"确认此前修复的 bug 仍然修复着，
+ * 补齐回归测试"）补完，针对的显然是 Planner 那个 bug；如果原文
+ * 截断处后面还有第 9 条及以后的内容，本节没有看到，只完成了
+ * 第 1–8 条明确要求的部分。
+ *
+ * A. 状态重新分类（分开陈述，不合并成一个笼统结论）
+ * ------------------------------------------------------------
+ *   IMPLEMENTED                        YES
+ *   VERIFIED IN SIMULATED GAS ENV      YES — 18/18（test-harness.js，
+ *                                      Node vm 伪造 GAS 全局）
+ *   REAL GAS VERIFIED                  NO — 从未在真实 Apps Script
+ *                                      执行过一次
+ *   INTEGRATION VERIFIED               NO — Inventory 一侧
+ *                                      sendProcurementRequest()
+ *                                      仍是 stub，从未真正调用过
+ *                                      Procurement；Telegram/TASKS
+ *                                      均未真实接通
+ *   PRODUCTION READY                   NO
+ * 这五条是五个独立事实，不是同一件事的不同说法——"已实现"不
+ * 蕴含"生产就绪"，本节刻意不压缩它们。
+ *
+ * B. EVIDENCE MATRIX
+ * ------------------------------------------------------------
+ * Gate | Requirement | Evidence | Status
+ *
+ * G1 单元/Harness | 覆盖 Slice1 全部代码路径 | test-harness.js，
+ *   18/18，`node test-harness.js` 实际跑出 | PASS（模拟环境）
+ *
+ * G2 真实 Spreadsheet 持久化 | 真实 Google Sheets 读写 | 无——
+ *   harness 用内存假 Sheet，从未碰过真实 Spreadsheet | NOT VERIFIED
+ *
+ * G3 真实 GAS Runtime | 代码在真实 Apps Script 执行环境跑过 |
+ *   无 | NOT VERIFIED
+ *
+ * G4 Inventory→Procurement 集成 | Inventory 真实调用 Procurement
+ *   成功 | 无——Inventory 的 sendProcurementRequest() 仍是
+ *   console.log stub，本项目未改动它（硬边界） | NOT VERIFIED（
+ *   结构性无法在不碰 Inventory OS 或不进入 Slice 2 部署的情况下
+ *   验证）
+ *
+ * G5 Telegram | 真实 Telegram 消息收发、真实用户经真实 bot 确认 |
+ *   TelegramConfirmationAdapter.send() 只 console.log，无 bot
+ *   token | NOT VERIFIED
+ *
+ * G6 同项目并发 | Procurement 自己项目内两个真正同时的执行经
+ *   LockService 正确串行 | harness 把"并发"模拟成两次连续同步
+ *   调用（Node 单线程）——只证明"锁内检查"逻辑无竞态，不构成
+ *   对真实 GAS LockService 排队/超时行为的验证，按指令要求不
+ *   从顺序 Node 测试推断这一条 | NOT VERIFIED IN REAL GAS（
+ *   逻辑层已验证，运行时层未验证——两者分开说）
+ *
+ * G7 跨项目并发 | Procurement 与 Inventory 各自独立锁作用域在
+ *   共享资源上不产生竞态 | 无实测证据；H1 的判断是基于 GAS 文档
+ *   行为的推理，不是对两个真实部署项目的实测 | NOT VERIFIED（
+ *   按指令明确要求：没有实证就明确标未验证）
+ *
+ * G8 Replay | 重复 request/confirmation/execution 不产生重复
+ *   mutation | test #2/#7/#11/#12/#17，全部 PASS | PASS（模拟环境）
+ *
+ * G9 Recovery | 执行中途失败（模拟或真实）后状态不损坏 | 无直接
+ *   测试——目前没有模拟"executeIntake 在 createRow 之后、
+ *   REQUESTED 事件记录之前崩溃"这类场景。GAS 脚本锁会在脚本执行
+ *   结束时释放（含异常终止），所以不会有锁永久卡死的风险，但
+ *   "卡在 REQUESTED 状态、后续再也没有进展"的孤儿记录目前没有
+ *   任何检测/恢复机制 | NOT VERIFIED / 已知真实缺口（不是"未测试
+ *   但应该没问题"，是"确实没有恢复机制"）
+ *
+ * G10 日志/错误处理 | 失败路径符合当前（已核实的）Inventory/
+ *   Procurement 运行时惯例 | 65 层 lock 超时抛出与 Inventory 完全
+ *   相同的用户可读消息；handleProcurementCommand 用 try/catch +
+ *   console.error + 安全兜底消息；test #18 实际跑了三种畸形输入
+ *   确认都不抛出、都返回安全字符串 | PASS（含真实执行验证，
+ *   不只是读代码）
+ *
+ * C. H1 — 跨项目锁限制，重新表述
+ * ------------------------------------------------------------
+ * 对 Slice 1 真实的 mutation 边界（PROCUREMENT_REQUESTS /
+ * PROC_LEDGER，只有 Procurement 自己的脚本会写）而言：当前的
+ * Procurement 侧 LockService.getScriptLock() 是充分的——没有
+ * 任何其他项目会写这两张表，跨项目锁语义在这个边界内根本不
+ * 适用，不是"凑合够用"，是"这个边界内问题不存在"。
+ *
+ * 唯一会真正触发跨项目锁问题的路径，是 Normalizer 的 identity
+ * 兜底分支在 CapabilityIdentity 不可用时才会走的 fallback（生产
+ * 环境不应该发生），或者未来 Manual 请求触发
+ * CapabilityIdentity.resolve() 真正创建一个新身份时——这条路径
+ * 依赖 Inventory OS 那份代码内部的锁语义，且 Procurement 是
+ * 通过 Library 机制调用它，Library 调用下 LockService.
+ * getScriptLock() 的作用域到底算调用方还是发布方，本仓库没有
+ * 独立验证过。这条明确标记：
+ *
+ *   NOT GUARANTEED
+ *
+ * 不虚报为"已解决"。修复需要 Inventory OS 那侧也换成
+ * LockService.getDocumentLock()（绑定 Spreadsheet 本身），单改
+ * Procurement 这一侧做不到，而且不修改 Inventory OS 是硬边界
+ * ——所以这条在本次 closeout 里只能维持"已知、未解决、有明确
+ * 触发条件"的状态。
+ *
+ * D. H3 — Confirmation 超时字段，正式记录为技术债
+ * ------------------------------------------------------------
+ *   TECHNICAL DEBT — DEDICATED CONFIRMATION EXPIRY FIELD
+ *
+ * 现状：借用 updated_at 做超时判定基准（见「过程中发现并修复的
+ * bug」——updateProjection 现在会尊重显式设置，所以借用本身
+ * 至少是可控的，但语义上仍然脆弱）。评估的未来专用字段：
+ *   confirmation_expires_at（ISO 字符串，Execution 在写入
+ *   AWAITING_CONFIRMATION 时一次性计算好，不依赖之后任何
+ *   updated_at 的变化）
+ * 不在本次 closeout 实现——Slice 1 范围内没有任何写入路径会在
+ * AWAITING_CONFIRMATION 期间意外触碰 updated_at（已用 test #13
+ * 验证auto-bump 行为本身正确），所以现在不存在"现有正确性故障"，
+ * 按指令不因为"没有发生的问题"而抢先实现新字段。
+ *
+ * E. Command Entrypoint 分类
+ * ------------------------------------------------------------
+ *   INTEGRATION CONTRACT — UNVERIFIED
+ *
+ * handleProcurementCommand() 的形状（裸全局函数）刻意模仿
+ * handleInventoryCommand()，但"另一个系统（假定是 JARVIS）会
+ * 把 Procurement OS 当 Library 引入、经这个函数调用"这个假设，
+ * 从未独立对照 JARVIS 自己的源码验证过——本仓库范围内也拿不到
+ * JARVIS 的源码。不因为"形状像"就当作已验证。
+ *
+ * 要关闭这个问题需要以下任一实证，不是继续读 Inventory OS 的
+ * 代码能解决的：
+ *   (a) 拿到 JARVIS/Personal AI Core 的真实源码，确认它是否
+ *       真的用 Library 机制调用 handleInventoryCommand，以及
+ *       调用方式的确切签名
+ *   (b) 真实部署：把 Procurement OS 作为 Library 加进一个测试
+ *       用的 JARVIS 实例，实际跑通一次 /confirm 指令的完整往返
+ * 在 (a) 或 (b) 任一发生之前，这个假设维持 UNVERIFIED，
+ * handleProcurementCommand 的签名暂不因为"猜另一种形状可能更
+ * 保险"而改动——形状本身没有证据说是错的，错的可能性只在于
+ * "调用方式的假设"，不是函数签名本身。
+ *
+ * F. 幂等性语义边界复核（Case A–D）
+ * ------------------------------------------------------------
+ * Case A（同 source+reference+urgency）→ 判重成立，test #2/#11/
+ *   #15 验证。
+ * Case B（同 identity+urgency，但确实是两个不同的采购意图，如
+ *   Inventory 已开一笔、用户又手动开一笔同一物品的请求）→
+ *   idempotency_key 正确地不判重（两者 source_domain/reference
+ *   不同）；但 CLOSEOUT 测试（#14）发现 Planner 原本的
+ *   "hasOpenSibling" 提示因为按 source_domain 过滤，看不见对方
+ *   ——这是本轮发现并已修复的真实缺口（见「过程中发现并修复的
+ *   bug」新增第 4 条），不是 idempotency_key 本身的问题，两者
+ *   分开处理，没有因此改动 key 的定义。
+ * Case C（同 reference，不同 urgency）→ 确认是刻意的设计：
+ *   分别产生独立 request_id（各自完整走一遍生命周期，保留
+ *   urgency 演变的审计轨迹），但 Planner 的 hasOpenSibling 会
+ *   正确互相标记为相关（test #16 验证）。改进候选（本轮不实现，
+ *   EP3）：目前只是"标记相关"，没有做到"主动合并/让新请求
+ *   supersede 旧请求"——如果未来这种场景变得常见，值得单独设计
+ *   一个 supersede 机制，而不是现在猜一个。
+ * Case D（终态后 replay）→ 需要先澄清一个精确点：EXECUTED 不在
+ *   TERMINAL_STATUSES 列表里（Constitution 六、只列
+ *   CLOSED/CANCELLED/REJECTED/EXPIRED 为终态），所以 EXECUTED
+ *   之后、CLOSED 之前的 replay 仍然会被判重（test #17 验证并
+ *   如实记录了这个发现，而不是假设"EXECUTED 就该被当终态"）。
+ *   这是符合当前定义的正确行为，不是 bug——CLOSED 才是生命周期
+ *   真正的终点。真正到达 CLOSED 之后的 replay，会被正确当作
+ *   新请求处理。
+ * 结论：四个 case 都过了一遍真实执行验证，idempotency_key 的
+ * 定义本身没有发现需要修改的证据，维持不变。
+ *
+ * G. 两个此前修复的 bug——回归覆盖确认
+ * ------------------------------------------------------------
+ * updateProjection() 的 updated_at 覆盖问题：test #13 直接、
+ *   独立验证（不再只是通过 checkExpiry 间接验证），确认修复
+ *   仍然成立，且 auto-bump 正常路径没有被这次修复破坏。
+ * Planner 自我检测为 sibling 的问题：test #14 直接验证自我
+ *   排除仍然成立，并在验证过程中发现、修复了本节 F 提到的
+ *   跨 source_domain 检测缺口（同一轮内追加的第 3 个真 bug，
+ *   与前两个分开列出，不混在一起）。
+ *
+ * H. 本轮新发现并修复的 bug（第 3 个，与上一轮的 2 个分开列）
+ * ------------------------------------------------------------
+ * 62_ProcurementPlanner.plan() 原本按 source_domain 过滤 sibling
+ * 查询，导致跨来源域的同一物品请求互相看不见——已修复为不再按
+ * source_domain 过滤（不影响 idempotency_key，那是不同层机制），
+ * File_Map 62 节说明已同步更新，test #14 重写后验证修复有效。
+ *
+ * 全部 18 项测试（12 项原有 + 6 项本轮新增）在本次修复后重新
+ * 跑过，18/18 PASS。
  */

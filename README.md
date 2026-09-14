@@ -4,20 +4,23 @@
 
 **Purpose:** Owns the lifecycle of procurement demand — Request → Normalize → Plan → Decision → User Confirmation → Execution Handoff → Events → Projection → Insights → Bridge. Not Inventory OS, not Finance OS, not a Supplier CRM, not Accounting OS, not Warehouse OS, not Payment OS, not a generic task manager.
 
-**Implementation status: Slice 1 implemented and empirically verified (2026-09-10).**
+**Implementation status: SLICE 1 — VERIFIED CORE, INTEGRATION PENDING** (2026-09-11, see `00_Slice1_Closure_Ledger.js`). **Slice 2 Entry: BLOCKED** (2026-09-13/14, see `00_Slice2_Entry_Gate.js` and `Procurement_OS_External_Verification_and_CrossOS_Contract_Closure_Report.md`) — the second document corrects the TASKS-schema finding (now real, E1 evidence), records two candidate cross-OS transport mechanisms rather than guessing one, recommends (but does not implement) a namespaced TASK_ID scheme to avoid collision with Inventory OS, and includes an 8-step Human Verification Procedure for the real-GAS check this session cannot perform itself.
 - Implemented: `00_Config.js`, `00_Setup.js`, `60`–`67`, `69` (9 files)
 - Not yet implemented (by design, see State §6): `68_ProcurementInsights.js`
-- Verification: 12/12 test-matrix items PASS against the actual executed code (`implementation/test-harness.js` fakes the GAS runtime and runs the real modules — not asserted, run). Three real bugs were found and fixed during this process; see State §9 for what they were.
-- **Not yet verified:** true concurrent execution and real Sheets/LockService behavior in an actual GAS environment (the test harness runs in Node with a single-threaded fake). This is called out explicitly, not glossed over — see State §9 Risk Register H1/H3.
+- Verification: 19/19 test-matrix items PASS against the actual executed code (`implementation/test-harness.js`, independently re-run from both the working copy and the delivered zip — they match). This number has changed across rounds as gaps were found in the *tests themselves* (not just the code) — see the Ledger's "Independent re-verification" note for what changed and why, rather than treating any single PASS count as final.
+- **Explicitly separated, not collapsed:** IMPLEMENTED=PASS, SIMULATED GAS=PASS, REAL GAS=NOT VERIFIED, INTEGRATION=NOT VERIFIED, PRODUCTION READY=NOT VERIFIED. Full Evidence Matrix (G1–G10) and the Slice 2 Entry Gate determination (currently **BLOCKED** — see Ledger §19-21) are in the Ledger, not repeated here.
 
 **Governance:** Q1–Q5 closed (2026-09-09). Four ADRs: ADR-000 (independent Domain OS, adopts Inventory OS's S1–S9 + Capability Layer lineage), ADR-001 (User Confirmation as a hard, channel-agnostic, snapshot-scoped authorization boundary), ADR-002 (independent GAS runtime, temporarily shared persistence), ADR-003 (Bridge inbound idempotency, with its limitation explicitly labeled "GOVERNED V0.x IDEMPOTENCY LIMITATION").
 
 **Source-of-truth files (in priority order):**
-1. `00_Project_Constitution.js` — principles (P1–P10), contracts (§5), governance baseline (§8)
-2. `00_File_Map.js` — per-module spec + implementation status for every 60–69 file
-3. `00_ADR.js` — ADR-000 through ADR-003 in full
-4. `00_Project_State.js` — phase, closure record, Slice 1 implementation record (readiness findings, bugs found & fixed, real test results, risk register)
-5. `implementation/` — the actual Slice 1 code + `test-harness.js`
+1. `Procurement_OS_External_Verification_and_CrossOS_Contract_Closure_Report.md` — most current: cross-OS topology, TASK_ID decision, TASKS ownership, Human Verification Procedure
+2. `00_Slice2_Entry_Gate.js` — Slice 2 readiness: Integration Contract Registry v1, P1–P8, Minimum/Rich Slice 2 status
+3. `00_Slice1_Closure_Ledger.js` — Slice 1 verification status, Evidence Matrix
+4. `00_Project_Constitution.js` — principles (P1–P10), contracts (§5), governance baseline (§8)
+5. `00_File_Map.js` — per-module spec + implementation status for every 60–69 file
+6. `00_ADR.js` — ADR-000 through ADR-003 in full
+7. `00_Project_State.js` — phase history (historical snapshots — current status is in the files above)
+8. `implementation/` — the actual Slice 1 code + `test-harness.js`
 
 **Known upstream limitation (by design, not a gap):** Inventory OS's real `sendProcurementRequest()` payload today is only `{ itemId, identityId, itemName, urgency }`. `estimated_quantity`, `unit`, `reason`, and `required_before` are nullable in Procurement's contract and are never fabricated. Enriching Inventory OS's payload is tracked as an "UPSTREAM FOLLOW-UP — INVENTORY OS" item, not a Procurement OS blocker (State §9-G).
 
