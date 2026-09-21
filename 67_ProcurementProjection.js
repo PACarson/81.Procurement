@@ -146,16 +146,19 @@ var ProcurementProjection = (function () {
       urgency: r[R.URGENCY - 1],
       reason: r[R.REASON - 1] || null,
       required_before: r[R.REQUIRED_BEFORE - 1] || null,
-      requested_at: r[R.REQUESTED_AT - 1],
+      // Defensive read-side coercion (2026-09-15) — see 00_Config.gs
+      // _coerceDateString: don't assume Sheets kept these as strings
+      // just because they were written as strings.
+      requested_at: _coerceDateString(r[R.REQUESTED_AT - 1]),
       status: r[R.STATUS - 1],
       decided_quantity: (r[R.DECIDED_QUANTITY - 1] === '') ? null : r[R.DECIDED_QUANTITY - 1],
-      confirmed_at: r[R.CONFIRMED_AT - 1] || null,
+      confirmed_at: _coerceDateString(r[R.CONFIRMED_AT - 1]) || null,
       confirmed_by: r[R.CONFIRMED_BY - 1] || null,
       confirmed_snapshot: snapshot,
-      executed_at: r[R.EXECUTED_AT - 1] || null,
+      executed_at: _coerceDateString(r[R.EXECUTED_AT - 1]) || null,
       linked_task_id: r[R.LINKED_TASK_ID - 1] || null,
-      closed_at: r[R.CLOSED_AT - 1] || null,
-      updated_at: r[R.UPDATED_AT - 1]
+      closed_at: _coerceDateString(r[R.CLOSED_AT - 1]) || null,
+      updated_at: _coerceDateString(r[R.UPDATED_AT - 1])
     };
   }
 

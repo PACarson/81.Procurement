@@ -11,16 +11,26 @@
  * ============================================================
  *
  * Phase: SLICE 1 — VERIFIED CORE, INTEGRATION PENDING（分类见
- *        00_Slice1_Closure_Ledger.js）。Slice 2 Entry：BLOCKED
- *        （00_Slice2_Entry_Gate.js，2026-09-13）。External
- *        Verification & Cross-OS Contract Closure（2026-09-14，
- *        见 Procurement_OS_External_Verification_and_CrossOS_
- *        Contract_Closure_Report.md）：TASKS schema 由 UNKNOWN
- *        修正为 E1 已验证；跨项目通信路径新增第二个候选（Sheet/
- *        EventBus 机制，证据来自三个独立来源）；TASK_ID 命名空间
- *        给出 Option C 建议（等待 Steven 批准，未实现）；Real GAS
- *        验证维持 EXTERNAL VERIFICATION REQUIRED，附 8 步人工
- *        验证清单。本轮未改动任何 runtime 代码。
+ *        00_Slice1_Closure_Ledger.js）。2026-09-15 起，Slice 2
+ *        重新分类为三层，不再是单一 BLOCKED（见
+ *        Procurement_OS_PreExisting_Ecosystem_Capability_
+ *        Reclassification.md）：Slice 2A（Procurement 内部能力）
+ *        = CONDITIONAL；Slice 2B（TASKS 集成）= BLOCKED；
+ *        Slice 2C（跨 OS 集成）= FUTURE DEPENDENCY。
+ *
+ *        同日：Steven 在真实 GAS 环境跑通了
+ *        setupProcurementOS()/smokeTestProcurementOS()，完整
+ *        REQUESTED→...→EXECUTED 序列 + 幂等性都验证成功（E3
+ *        真实证据，非模拟）。发现一个真实缺口：日期列在真实
+ *        Sheet 里显示"Automatic"而非"Plain text"——已修复
+ *        （00_Config.js 加入 Script Properties 支持与
+ *        _coerceDateString 防御性读取纠正；00_Setup.js 调整
+ *        setNumberFormat 施加顺序、新增 IDENTITY_REGISTRY/TASKS
+ *        自动建表与 reformatProcurementDateColumns() 独立工具；
+ *        67/66 两个 Projection/Events 文件加入读取端防御性日期
+ *        纠正），回归测试从 19/19 扩到 21/21（新增 #20 建表测试、
+ *        #21 日期纠正测试），全部通过。
+ *
  *        本文件「九、」「十、」两节保留作历史记录，其中的
  *        12/12、18/18 等数字是当时的真实快照，不因后续测试增加
  *        而回头改写。

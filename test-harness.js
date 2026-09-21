@@ -78,13 +78,17 @@ function makeFakeSpreadsheet() {
   };
 }
 
-function buildSandbox() {
+function buildSandbox(opts) {
+  opts = opts || {};
   const fakeSS = makeFakeSpreadsheet();
   // Pre-seed IDENTITY_REGISTRY / TASKS so setupProcurementOS()'s
   // existence check passes, mirroring "Inventory OS already set this
-  // Spreadsheet up" (ADR-002).
-  fakeSS.insertSheet('IDENTITY_REGISTRY');
-  fakeSS.insertSheet('TASKS');
+  // Spreadsheet up" (ADR-002) — UNLESS opts.skipKernelPreseed, used
+  // to test Setup's own new auto-creation path (2026-09-15).
+  if (!opts.skipKernelPreseed) {
+    fakeSS.insertSheet('IDENTITY_REGISTRY');
+    fakeSS.insertSheet('TASKS');
+  }
 
   const scriptProps = {};
   const logs = { log: [], error: [] };
@@ -116,7 +120,8 @@ function buildSandbox() {
     },
     JSON, Math, Date, Object, Array, String, Number,
     __logs: logs,
-    __fakeSS: fakeSS
+    __fakeSS: fakeSS,
+    __scriptProps: scriptProps
   };
   sandbox.global = sandbox;
   return sandbox;
@@ -166,8 +171,8 @@ function freshContext() {
 // setupProcurementOS is defined in 00_Setup.js — load it too, separately,
 // since it is only needed once per fresh context (not part of the
 // always-loaded module set above, to keep load order simple).
-function freshContextWithSetup() {
-  const sandbox = buildSandbox();
+function freshContextWithSetup(opts) {
+  const sandbox = buildSandbox(opts);
   const context = vm.createContext(sandbox);
   const dir = __dirname;
   loadFiles(context, dir, [
@@ -451,6 +456,49 @@ check('R2 DEDICATED — first-ever request for a fresh identity shows hasOpenSib
   assert(plannedEvent, 'PLANNED event not found');
   assert(plannedEvent.context.hasOpenSibling === false, 'a genuinely first-ever request must not see itself (or anything else) as an open sibling, got hasOpenSibling=' + plannedEvent.context.hasOpenSibling);
   return 'hasOpenSibling correctly false on a request with no real prior siblings — closes a gap where only the positive case was previously asserted';
+});
+
+// 20. NEW (2026-09-15) — setupProcurementOS() auto-creates
+//     IDENTITY_REGISTRY/TASKS when missing, using their own headers,
+//     without disturbing PROCUREMENT_REQUESTS/PROC_LEDGER creation.
+check('setupProcurementOS() creates IDENTITY_REGISTRY and TASKS when absent, with the specified headers', () => {
+  const { context, sandbox } = freshContextWithSetup({ skipKernelPreseed: true });
+  const idSheet = sandbox.__fakeSS.getSheetByName('IDENTITY_REGISTRY');
+  const taskSheet = sandbox.__fakeSS.getSheetByName('TASKS');
+  assert(idSheet, 'IDENTITY_REGISTRY was not created');
+  assert(taskSheet, 'TASKS was not created');
+  const idHeaders = idSheet.getRange(1, 1, 1, 6).getValues()[0];
+  const taskHeaders = taskSheet.getRange(1, 1, 1, 9).getValues()[0];
+  assert(idHeaders.join(',') === 'identity_id,canonical_name,aliases,category,unit,created_at', 'IDENTITY_REGISTRY headers wrong: ' + idHeaders.join(','));
+  assert(taskHeaders.join(',') === 'task_id,title,category,priority,status,source_system,ref_item_id,created_at,updated_at', 'TASKS headers wrong: ' + taskHeaders.join(','));
+  // And confirm the main pipeline still works end-to-end afterward —
+  // auto-creating the kernel sheets must not break normal operation.
+  const r = vm.runInContext(`ProcurementBridge.receiveFromInventory(${JSON.stringify(inventoryPayload({ itemId: 'INV-POSTSETUP' }))})`, context);
+  assert(r.status === 'AWAITING_CONFIRMATION', 'pipeline broken after auto-creating kernel sheets');
+  return 'both standalone-kernel sheets created with correct headers; main pipeline unaffected';
+});
+
+// 21. NEW (2026-09-15) — defensive read-side date coercion: if a date
+//     cell ever comes back as a real Date object (e.g. because Sheets
+//     silently coerced it despite the plain-text format request —
+//     exactly what real-GAS testing found, see State entry this date),
+//     Projection/Events must still hand back a string, not a Date.
+check('Defensive coercion — a Date object in a date cell is read back as a string, not left as a Date', () => {
+  const { context, sandbox } = freshContextWithSetup();
+  const r = vm.runInContext(`ProcurementBridge.receiveFromInventory(${JSON.stringify(inventoryPayload({ itemId: 'INV-DATECOERCE' }))})`, context);
+
+  // Simulate exactly what Steven's real-GAS test found: the cell holds
+  // a genuine Date object, not the ISO string Procurement wrote.
+  const reqSheet = sandbox.__fakeSS.getSheetByName('PROCUREMENT_REQUESTS');
+  const rows = reqSheet.getRange(2, 1, reqSheet.getLastRow() - 1, 21).getValues();
+  const rowIdx = rows.findIndex(row => row[0] === r.requestId);
+  assert(rowIdx !== -1, 'setup: could not find the row to corrupt for this test');
+  reqSheet.getRange(2 + rowIdx, 12).setValue(new Date('2026-09-15T00:00:00Z')); // col 12 = requested_at
+
+  const row = vm.runInContext(`ProcurementProjection.getProjection("${r.requestId}")`, context);
+  assert(typeof row.requested_at === 'string', 'requested_at should be coerced to a string even when the underlying cell holds a Date, got typeof=' + typeof row.requested_at);
+  assert(!isNaN(new Date(row.requested_at).getTime()), 'coerced value should still be a valid, parseable date string, got: ' + row.requested_at);
+  return 'Date object in a date cell correctly coerced to a string on read: ' + row.requested_at;
 });
 
 // Print results

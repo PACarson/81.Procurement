@@ -10,23 +10,58 @@
 // 00_Project_State.gs "Implementation Readiness" for the
 // evidence this was copied from real, running code rather than
 // invented fresh.
+//
+// 2026-09-15: added Script Properties support for SPREADSHEET_ID /
+// TELEGRAM_CHAT_ID / TELEGRAM_BOT_TOKEN, and IDENTITY_REGISTRY/TASKS
+// schema constants so setupProcurementOS() can create standalone
+// test versions of those two tables (see 00_Setup.gs). NOTE: the
+// IDENTITY_REGISTRY layout below is the ORIGINAL 81_Procurement-main
+// stub schema (identity_id/canonical_name/aliases/category/unit/
+// created_at) — it does NOT match Inventory OS's real, current
+// 00_Capability_Identity.gs schema (which dropped category/unit and
+// added domain). This is fine for Procurement's own standalone
+// smoke-testing (the fallback identity path never touches this
+// sheet at all — see 61_ProcurementNormalizer.js), but if this
+// Spreadsheet is ever pointed at the real shared ecosystem one,
+// this schema must NOT be assumed to match Inventory's real table.
 // ============================================================
+
+function _scriptProp(key, fallback) {
+  try {
+    var v = PropertiesService.getScriptProperties().getProperty(key);
+    return (v === null || v === undefined || v === '') ? fallback : v;
+  } catch (e) {
+    return fallback;
+  }
+}
 
 var PROC_CONFIG = {
 
   // ADR-002: Persistence temporarily shared with Inventory OS's
-  // ecosystem Spreadsheet. This is NOT a bound script (Procurement
-  // OS is its own GAS project — ADR-002 Runtime boundary), so this
-  // must be set to the real Spreadsheet ID before setupProcurementOS()
-  // is run. Left blank here deliberately — do not guess a value.
-  SPREADSHEET_ID: '', // TODO: set to the shared ecosystem Spreadsheet ID (ADR-002)
+  // ecosystem Spreadsheet. Read from Script Properties
+  // (Project Settings → Script Properties → PROC_SPREADSHEET_ID)
+  // so the value lives in deployment config, not committed code —
+  // set it there rather than editing this file. Falls back to ''
+  // (bound-script / active spreadsheet) if not set.
+  SPREADSHEET_ID: _scriptProp('PROC_SPREADSHEET_ID', ''),
+
+  // Telegram — read from Script Properties, never hardcoded (these
+  // are secrets). Used by TelegramConfirmationAdapter
+  // (64_ProcurementUserConfirmation.gs) once a real bot is wired up;
+  // both fall back to '' (adapter stays console.log-only) until set.
+  TELEGRAM_CHAT_ID:   _scriptProp('PROC_TELEGRAM_CHAT_ID', ''),
+  TELEGRAM_BOT_TOKEN:  _scriptProp('PROC_TELEGRAM_BOT_TOKEN', ''),
 
   SHEETS: {
     REQUESTS: 'PROCUREMENT_REQUESTS',
-    LEDGER:   'PROC_LEDGER'
-    // IDENTITY_REGISTRY / TASKS are NOT owned here — accessed only
-    // through CapabilityIdentity.* / the Bridge's Task helpers,
-    // never opened directly by Procurement OS (Constitution 三、C12/P3).
+    LEDGER:   'PROC_LEDGER',
+    // Standalone-test versions only — see file header note above.
+    // Procurement's own runtime code still never reads/writes these
+    // directly (Constitution 三、C12/P3); Setup creates them only so
+    // setupProcurementOS() can run against a fresh, empty Spreadsheet
+    // without requiring Inventory OS's real tables to exist first.
+    IDENTITY_REGISTRY: 'IDENTITY_REGISTRY',
+    TASKS: 'TASKS'
   },
 
   // PROCUREMENT_REQUESTS cols (1-based, 21 total, A–U) — Projection/Read Model
@@ -76,6 +111,17 @@ var PROC_CONFIG = {
 
   LEDGER_HEADERS: ['event_id', 'event_type', 'request_id',
     'identity_id', 'actor', 'context_json', 'recorded_at'],
+
+  // Standalone-test schema only (A–F) — see file header note.
+  IDENTITY_REGISTRY_HEADERS: ['identity_id', 'canonical_name',
+    'aliases', 'category', 'unit', 'created_at'],
+
+  // Standalone-test schema only (A–I) — matches the real Inventory
+  // OS TASKS layout (00_Config.txt/29_InventoryBridge.txt, E1
+  // evidence) so a future real Task-creation adapter has a
+  // realistic shape to develop against.
+  TASKS_HEADERS: ['task_id', 'title', 'category', 'priority',
+    'status', 'source_system', 'ref_item_id', 'created_at', 'updated_at'],
 
   // Constitution 六、STATUS — 9 states
   STATUS: {
@@ -130,6 +176,27 @@ function _procEsc(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+/**
+ * Defensive read-side date coercion — the OTHER half of the
+ * ecosystem's own documented lesson ("force the column to
+ * plain-text format at sheet creation AND coerce defensively on
+ * read regardless" — found by Property OS before shipping, per
+ * prior UEF Failure Catalog research this project inherited). This
+ * project previously only implemented the write-time half
+ * (setNumberFormat('@') in 00_Setup.gs); this fills the gap found
+ * via real GAS testing (00_Project_State.gs, 2026-09-15 entry) where
+ * Sheets displayed the date columns as "Automatic" rather than
+ * "Plain text". Regardless of which exact GAS behavior caused that,
+ * any code reading these cells must not assume the value is
+ * necessarily still a string.
+ */
+function _coerceDateString(value) {
+  if (value instanceof Date) {
+    return Utilities.formatDate(value, 'Asia/Kuala_Lumpur', "yyyy-MM-dd'T'HH:mm:ss'+08:00'");
+  }
+  return value; // already a string (or '', or null) — pass through
 }
 
 /**

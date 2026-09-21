@@ -442,3 +442,45 @@
  * P7 Confirmation expiry             | DECISION APPROVED | 本文件 D1 | No（决策已完成）
  * P8 Recovery                        | POLICY DEFINED, Slice 2 Mandatory | 本文件 D2 | No（决策已完成，实现待 Slice2）
  */
+
+/* ============================================================
+ * 2026-09-15 RECLASSIFICATION — supersedes D3/D4's flat BLOCKED
+ * framing above (kept as historical record, not rewritten)
+ * ============================================================
+ * D3/D4 above answered "is Slice 2 as a whole ready" and got
+ * BLOCKED both times because P2/P5 were unresolved. This round's
+ * governing principle — a capability another OS hasn't built yet
+ * is not automatically a Procurement blocker — showed that
+ * question was the wrong granularity. See:
+ *
+ *   Procurement_OS_PreExisting_Ecosystem_Capability_
+ *   Reclassification.md — full reasoning, Q1-Q6, Decision A/B/C
+ *   Identity_Boundary_Matrix.md — TASK_ID walked back as premature
+ *   Slice2_Internal_vs_Integration_Scope.md — the actual 2A/2B/2C split
+ *
+ * New status (replaces the single "MINIMUM/RICH SLICE 2 = BLOCKED"
+ * lines above for anything going forward):
+ *
+ *   Slice 2A (Procurement Internal)   CONDITIONAL
+ *   Slice 2B (TASKS Integration)      BLOCKED — external contract
+ *                                     not existing (ownership
+ *                                     unresolved, not a schema gap)
+ *   Slice 2C (Cross-OS Integration)   FUTURE DEPENDENCY — EventBus
+ *                                     confirmed not yet built on
+ *                                     Personal AI Core's side
+ *
+ * Driving new evidence: Steven ran real GAS testing since D3/D4
+ * were written — setupProcurementOS()/smokeTestProcurementOS()
+ * completed successfully in a live Apps Script project (full
+ * REQUESTED→...→EXECUTED sequence, idempotency held on a
+ * duplicate). One real defect found (date columns showing
+ * "Automatic" not "Plain text") and fixed the same round — see
+ * 00_Project_State.js. This is why P5 moved from "EXTERNAL
+ * VERIFICATION REQUIRED" to "substantially verified, two re-checks
+ * pending" rather than staying flatly blocked.
+ *
+ * Recommendation adopted this round: Option 2 (allow Slice 2A to
+ * proceed independently; keep 2B/2C blocked/future) — not
+ * implemented yet, awaiting authorization per the reclassification
+ * report's own stop condition.
+ */

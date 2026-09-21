@@ -84,7 +84,8 @@ var ProcurementEvents = (function () {
       identity_id: r[PROC_CONFIG.L.IDENTITY_ID - 1],
       actor: r[PROC_CONFIG.L.ACTOR - 1],
       context: ctx,
-      recorded_at: r[PROC_CONFIG.L.RECORDED_AT - 1]
+      // Defensive read-side coercion (2026-09-15) — see 00_Config.gs.
+      recorded_at: _coerceDateString(r[PROC_CONFIG.L.RECORDED_AT - 1])
     };
   }
 

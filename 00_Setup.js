@@ -5,40 +5,39 @@
 // create all sheets and headers. Safe to run multiple times —
 // idempotent (mirrors Inventory OS 00_Setup.gs exactly).
 //
-// PREREQUISITE: PROC_CONFIG.SPREADSHEET_ID (00_Config.gs) must be
-// set to the shared ecosystem Spreadsheet ID (ADR-002) before
-// running this. Left unset on purpose — see 00_Config.gs.
+// SPREADSHEET_ID / TELEGRAM_CHAT_ID / TELEGRAM_BOT_TOKEN now come
+// from Script Properties (00_Config.gs, 2026-09-15) — set them via
+// Project Settings → Script Properties in the Apps Script editor,
+// not by editing 00_Config.gs.
+//
+// 2026-09-15: setupProcurementOS() now CREATES IDENTITY_REGISTRY and
+// TASKS if they are missing, rather than requiring them to pre-exist.
+// This is a standalone-testing convenience — see 00_Config.gs's file
+// header note on why the IDENTITY_REGISTRY schema created here does
+// NOT necessarily match Inventory OS's real, current schema. If this
+// Spreadsheet is later pointed at the real shared ecosystem one where
+// Inventory OS already owns real IDENTITY_REGISTRY/TASKS tables, this
+// function correctly leaves them untouched (see _setupSheet's
+// header-already-present check) — it will not overwrite real data or
+// headers, only fill in a sheet that's genuinely missing.
 // ============================================================
 
 /**
  * Entry point. Run this once from the Apps Script editor.
- * Creates PROCUREMENT_REQUESTS and PROC_LEDGER sheets.
- * Does NOT create IDENTITY_REGISTRY or TASKS — those belong to
- * Inventory OS / the Shared Kernel (Constitution 三、), and must
- * already exist in the target Spreadsheet before this is run.
+ * Creates PROCUREMENT_REQUESTS, PROC_LEDGER, and — if not already
+ * present — standalone-test versions of IDENTITY_REGISTRY and TASKS.
  */
 function setupProcurementOS() {
-  if (!PROC_CONFIG.SPREADSHEET_ID) {
-    var msg = 'setupProcurementOS() aborted: PROC_CONFIG.SPREADSHEET_ID '
-      + 'is not set (00_Config.gs). This must point at the shared '
-      + 'ecosystem Spreadsheet per ADR-002 — set it explicitly, do '
-      + 'not run against a blank/wrong Spreadsheet.';
-    console.error(msg);
-    throw new Error(msg);
-  }
-
   var ss = _getSpreadsheet();
 
-  // Fail loudly if the Shared Kernel tables this project depends on
-  // are missing — Procurement OS must never create its own copy of
-  // IDENTITY_REGISTRY or TASKS (Constitution 三、"不新建，复用").
-  if (!ss.getSheetByName('IDENTITY_REGISTRY')) {
-    throw new Error('IDENTITY_REGISTRY not found in target Spreadsheet. '
-      + 'Procurement OS must point at the same Spreadsheet Inventory OS '
-      + 'already set up (ADR-002) — it does not create this table itself.');
+  var createdStandaloneKernel = [];
+  if (!ss.getSheetByName(PROC_CONFIG.SHEETS.IDENTITY_REGISTRY)) {
+    _setupSheet(ss, PROC_CONFIG.SHEETS.IDENTITY_REGISTRY, PROC_CONFIG.IDENTITY_REGISTRY_HEADERS);
+    createdStandaloneKernel.push('IDENTITY_REGISTRY');
   }
-  if (!ss.getSheetByName('TASKS')) {
-    throw new Error('TASKS not found in target Spreadsheet. Same as above.');
+  if (!ss.getSheetByName(PROC_CONFIG.SHEETS.TASKS)) {
+    _setupSheet(ss, PROC_CONFIG.SHEETS.TASKS, PROC_CONFIG.TASKS_HEADERS);
+    createdStandaloneKernel.push('TASKS');
   }
 
   _setupSheet(ss, PROC_CONFIG.SHEETS.REQUESTS, PROC_CONFIG.REQUEST_HEADERS);
@@ -46,11 +45,52 @@ function setupProcurementOS() {
 
   var msg = 'Procurement OS V0.x setup complete.\n\n'
     + 'Sheets: PROCUREMENT_REQUESTS, PROC_LEDGER\n'
-    + '(IDENTITY_REGISTRY, TASKS confirmed present, not owned here)\n\n'
-    + 'Architecture: S1-S9 Domain OS Lifecycle Standard (ADR-000)\n'
+    + (createdStandaloneKernel.length
+        ? ('Created standalone-test versions of: ' + createdStandaloneKernel.join(', ')
+           + '\n(NOTE: IDENTITY_REGISTRY here is NOT necessarily Inventory OS\'s\n'
+           + 'real schema — see 00_Config.gs header note — Procurement\'s own\n'
+           + 'fallback identity path never reads/writes it anyway.)\n')
+        : '(IDENTITY_REGISTRY, TASKS already present, left untouched)\n')
+    + '\nArchitecture: S1-S9 Domain OS Lifecycle Standard (ADR-000)\n'
     + 'Request → Normalizer → [Identity] → Planner → Decision →\n'
     + '[UserConfirmation] → Execution → Events → Projection';
 
+  console.log(msg);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* standalone script */ }
+}
+
+/**
+ * Standalone utility — (re)apply plain-text formatting to every
+ * known date/timestamp column across PROCUREMENT_REQUESTS and
+ * PROC_LEDGER, without touching headers or data. Added 2026-09-15
+ * after real-GAS testing showed the date columns' Format → Number
+ * menu reading "Automatic" rather than "Plain text" post-setup —
+ * root cause not fully isolated from this sandbox (see
+ * 00_Project_State.gs entry for that date), so this is provided as
+ * a direct, safe remedy Steven can run any time regardless of cause,
+ * rather than a guess dressed up as a fix. Safe to run repeatedly.
+ */
+function reformatProcurementDateColumns() {
+  var ss = _getSpreadsheet();
+  var results = [];
+  [PROC_CONFIG.SHEETS.REQUESTS, PROC_CONFIG.SHEETS.LEDGER].forEach(function (sheetName) {
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) { results.push(sheetName + ': NOT FOUND, skipped'); return; }
+    var dateCols = _dateColumnsFor(sheetName);
+    dateCols.forEach(function (colIndex) {
+      sheet.getRange(1, colIndex, sheet.getMaxRows(), 1).setNumberFormat('@');
+    });
+    results.push(sheetName + ': reformatted ' + dateCols.length + ' column(s)');
+  });
+  var msg = 'reformatProcurementDateColumns() done:\n' + results.join('\n')
+    + '\n\nThis only changes cell FORMAT, not the underlying values already '
+    + 'stored — if a date cell was already silently converted to a real '
+    + 'Date/serial before this ran, re-formatting the column to plain text '
+    + 'will not retroactively turn that specific stored value back into the '
+    + 'original ISO string (it will just display the serial as text). New '
+    + 'writes going forward will be protected. Existing rows may need a '
+    + 'manual re-save (or a small script re-writing them through '
+    + '_procNow()-formatted strings) if any already got coerced.';
   console.log(msg);
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* standalone script */ }
 }
@@ -100,6 +140,14 @@ function _setupSheet(ss, sheetName, headers) {
     sheet = ss.insertSheet(sheetName);
     console.log('Created sheet: ' + sheetName);
   }
+  // Format BEFORE writing headers/data — belt-and-suspenders in case
+  // GAS's auto-detection ever looks at existing cell content when a
+  // value is first written into a still-"Automatic"-formatted cell.
+  var dateCols = _dateColumnsFor(sheetName);
+  dateCols.forEach(function (colIndex) {
+    sheet.getRange(1, colIndex, sheet.getMaxRows(), 1).setNumberFormat('@');
+  });
+
   var firstCell = sheet.getRange(1, 1).getValue();
   if (!firstCell || firstCell === '') {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
@@ -107,14 +155,6 @@ function _setupSheet(ss, sheetName, headers) {
     sheet.setFrozenRows(1);
     console.log('Headers set for: ' + sheetName);
   }
-  // HIGH finding (Constitution 六、) — force date/timestamp-bearing
-  // columns to plain-text so Sheets never silently coerces an ISO
-  // string into a Date serial. Applied here, at table-creation time,
-  // as a default — not something deferred to "when it breaks".
-  var dateCols = _dateColumnsFor(sheetName);
-  dateCols.forEach(function (colIndex) {
-    sheet.getRange(1, colIndex, sheet.getMaxRows(), 1).setNumberFormat('@');
-  });
 }
 
 function _dateColumnsFor(sheetName) {
